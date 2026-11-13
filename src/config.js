@@ -9,11 +9,11 @@ function intEnv(name, def) {
 const config = {
   botToken: process.env.BOT_TOKEN,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-  model: process.env.MODEL || "claude-sonnet-4-6",
+  model: process.env.ANTHROPIC_MODEL || process.env.MODEL || "claude-sonnet-5-5",
 
   // OpenAI (muqobil yoki zaxira provayder)
   openaiApiKey: process.env.OPENAI_API_KEY,
-  openaiModel: process.env.OPENAI_MODEL || "gpt-4o",
+  openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
 
   // Admin Telegram ID(lar) — vergul bilan ajratilgan
   adminIds: (process.env.ADMIN_IDS || "")

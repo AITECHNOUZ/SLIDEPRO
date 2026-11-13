@@ -65,16 +65,22 @@ function runMatplotlib(data) {
   });
 }
 
+// Word sahifasidagi kenglik: GOST chizma qoidasi — ~6,2 dyuym (96 px/dyuym).
+const DISPLAY_WIDTH_PX = Math.round(6.2 * 96);
+
 async function renderMatplotlibChart(chart) {
   const normalized = normalizeChartData(chart);
-  if (!["mathematical_graph", "experiment_results"].includes(normalized.diagram_type)) {
-    throw new Error(`chart: Matplotlib uchun noma'lum diagram_type (${normalized.diagram_type || "bo'sh"})`);
+  const diagramType = normalized.diagram_type || "simple";
+  if (!["mathematical_graph", "experiment_results", "simple"].includes(diagramType)) {
+    throw new Error(`chart: Matplotlib uchun noma'lum diagram_type (${diagramType})`);
   }
-  const buf = await runMatplotlib(normalized);
+  const payload = { ...normalized, diagram_type: diagramType };
+  if (chart && typeof chart.threshold === "object" && chart.threshold) payload.threshold = chart.threshold;
+  const buf = await runMatplotlib(payload);
   const metadata = await sharp(buf).metadata();
   if (metadata.format !== "png" || !metadata.width || !metadata.height) throw new Error("chart: Matplotlib yaroqli PNG qaytarmadi");
-  const width = 440;
+  const width = DISPLAY_WIDTH_PX;
   return { buf, width, height: Math.round(width * metadata.height / metadata.width) };
 }
 
-module.exports = { renderMatplotlibChart, runMatplotlib, MAX_PNG_BYTES, RENDER_TIMEOUT_MS };
+module.exports = { renderMatplotlibChart, runMatplotlib, MAX_PNG_BYTES, RENDER_TIMEOUT_MS, DISPLAY_WIDTH_PX };

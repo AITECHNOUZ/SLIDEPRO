@@ -19,6 +19,12 @@ const {
   detectForbiddenIntroConclusion,
 } = require("./prompt");
 const { renderFormula } = require("./formula");
+const { latexToOmml } = require("./omml");
+const { normalizeHeadingTitle } = require("./headings");
+const {
+  pageFitEnabled, measureDocx, analyzeChapterPages, planPageAdjustment,
+  shrinkChapterContent, sectionGroups, insertParagraphsAfter,
+} = require("./page-fit");
 const { renderChart }   = require("./chart");
 const { renderFlowchart } = require("./flowchart");
 const { getFlowchartTemplate } = require("./flowchart-templates");
@@ -33,7 +39,7 @@ const { normalizeChartData } = require("./chart-data");
 const { normalizeFormulaSource } = require("./formula-data");
 const { formulaKey } = require("./media-validation");
 const { buildMediaSlots, groupMediaSlotsByChapter, mergeMediaSlotsIntoContent } = require("./media-slots");
-const { postJsonWithRetry } = require("./llm-http");
+const { complete } = require("../llm/client");
 const { cleanMediaText } = require("./media-captions");
 const {
   validateBibliography,
@@ -84,7 +90,7 @@ function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
   const chapterContext = chapter?.title ? ` Bob: ${chapter.title}.${chapter.role ? ` Bob vazifasi: ${chapter.role}.` : ""}` : "";
   const common = `Mavzu: ${topic || "Mavzu"}.${chapterContext} Til: ${language || "o'zbek"}. Slot ID: ${slot.slot_id}. Reja: ${planText}.${source}\nFaqat bitta media obyektini tuz. Slot ID va type qiymatlarini aynan saqla; boshqa izoh yoki markdown bermagin. Sarlavha va caption media mazmunini tabiiy, qisqa ifodalasin; ularga meta-ma'lumot yoki status yorlig'i qo'shma.`;
   const schemas = {
-    formula: `Aynan rejalashtirilgan LaTeX formulani qaytar, yangi formula to'qima. JSON: {"slot_id":"${slot.slot_id}","type":"formula","latex":"...","display_text":"...","caption":"..."}`,
+    formula: `Aynan rejalashtirilgan LaTeX formulani qaytar, yangi formula to'qima. Formula Word'ga OMML (native tenglama) bo'lib tushadi, shuning uchun toza standart LaTeX yoz: \\frac, ^{}, _{}, \\sqrt, \\sum, \\int, \\left( \\right), \\text{} — $ belgilari, \\label, \\tag yoki raqam qo'shma. "where" maydonida formuladagi HAR BIR belgini ketma-ket izohla: belgi $...$ ichida, keyin tire, ma'nosi va o'lchov birligi (masalan: "$U$ — kuchlanish, V; $I$ — tok kuchi, A; $R$ — qarshilik, Om"). "bu yerda" so'zini yozma — dastur o'zi qo'shadi. JSON: {"slot_id":"${slot.slot_id}","type":"formula","latex":"...","display_text":"...","caption":"...","where":"$X$ — ..., birlik; $Y$ — ..., birlik"}`,
     chart: slot.diagram_type === "mathematical_graph"
       ? `Matplotlib matematik grafik uchun JSON qaytar. 1–5 ta mavzuga mos aniq funksiyani yoz; rejadagi functions, x_min va x_max mavjud bo‘lsa ularni aynan saqla, mavzu/rejaga zid funksiya bilan almashtirma. Ifodada faqat x, pi, e, raqamlar, + - * / **, qavs va sin/cos/tan/asin/acos/atan/sinh/cosh/tanh/exp/log/log10/sqrt/abs funksiyalaridan foydalan. x_min < x_max bo‘lsin; render 501 namunaviy nuqtani hisoblab, silliq egri chiziq chizadi — y qiymatlarini qo‘lda sanab kiritma. Oraliq va ifoda mazmuniga mos, sarlavha/birlik/o‘qlarni aniq yoz. Haqiqiy manba promptda bo‘lmasa, manba uydirma qilma va data_source ni bo‘sh qoldir. JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"mathematical_graph","chartType":"line","title":"...","functions":[{"name":"f(x)","expression":"x**2"}],"x_min":-5,"x_max":5,"x_label":"x","y_label":"f(x)","unit":"","data_source":"","caption":"..."}`
       : slot.diagram_type === "experiment_results"
@@ -96,37 +102,10 @@ function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
   return `${common}\n${schemas[slot.type] || "Noma'lum media turi."}`;
 }
 
-// в”Ђв”Ђ LLM chaqiruv (anthropic в†’ openai failover) в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ── LLM chaqiruv (Claude → OpenAI failover, src/llm/client.js) ─────────
 async function callLLM({ system, user, llm, maxTokens = 6000 }) {
-  const { provider, anthropicKey, anthropicModel, openaiKey, openaiModel } = llm;
-  const order = provider === "openai" ? ["openai"]
-    : provider === "anthropic" ? ["anthropic"] : ["anthropic","openai"];
-  const avail = order.filter(p=>(p==="anthropic"&&anthropicKey)||(p==="openai"&&openaiKey));
-  if (!avail.length) throw new Error("LLM kalit topilmadi.");
-  const errs = [];
-  for (const name of avail) {
-    try {
-      if (name === "anthropic") {
-        const d = await postJsonWithRetry("https://api.anthropic.com/v1/messages",{
-          method:"POST",
-          headers:{"content-type":"application/json","x-api-key":anthropicKey,"anthropic-version":"2023-06-01"},
-          body: JSON.stringify({ model:anthropicModel||"claude-sonnet-4-6", max_tokens:maxTokens,
-            system, messages:[{role:"user",content:user}] }),
-        }, "Anthropic");
-        return (d.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("").trim();
-      } else {
-        const d = await postJsonWithRetry("https://api.openai.com/v1/chat/completions",{
-          method:"POST",
-          headers:{"content-type":"application/json","authorization":"Bearer "+openaiKey},
-          body: JSON.stringify({ model:openaiModel||"gpt-5-nano", max_completion_tokens:maxTokens,
-            temperature:0.7, response_format:{type:"json_object"},
-            messages:[{role:"system",content:system},{role:"user",content:user}] }),
-        }, "OpenAI");
-        return (d.choices?.[0]?.message?.content||"").trim();
-      }
-    } catch(e) { errs.push(name+": "+e.message); }
-  }
-  throw new Error(errs.join(" | "));
+  const { text } = await complete({ system, user, llm, maxTokens });
+  return text;
 }
 
 // Outline'dan KONSEPT darajasida ban-list qurish
@@ -530,6 +509,7 @@ function normalizeMediaSlotResult(slot, response, { chapter, language }) {
       type: "formula", slot_id: slot.slot_id, latex: normalizeFormulaSource(plannedLatex),
       display_text: String(response.display_text || plan.display_text || plannedLatex),
       caption: String(response.caption || plan.caption || plan.concept || "Rejalashtirilgan formula"),
+      where: cleanFormulaWhere(response.where || plan.where || ""),
     };
   }
 
@@ -586,6 +566,7 @@ function fallbackMediaSlot(slot, { chapter, language }) {
       type: "formula", slot_id: slot.slot_id, latex,
       display_text: String(plan.display_text || latex),
       caption: String(plan.caption || plan.concept || "Rejalashtirilgan formula"),
+      where: cleanFormulaWhere(plan.where || ""),
       _syntheticFallback: true,
     };
   }
@@ -667,9 +648,22 @@ function fallbackMediaSlot(slot, { chapter, language }) {
   throw new Error(`Noma'lum media fallback turi: ${slot.type}`);
 }
 
+// Formula izohi ("bu yerda ...") — bir qatorli, ortiqcha prefikssiz
+function cleanFormulaWhere(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .replace(/^\s*(bu yerda|bunda|где|where)\s*[:,]?\s*/i, "")
+    .trim()
+    .slice(0, 600);
+}
+
 async function renderAndVerifyMedia(item, language) {
   let image = null;
-  if (item.type === "formula") image = await renderFormula(item.latex || item.display_text || "");
+  if (item.type === "formula") {
+    // Word'ga OMML bo'lib tushishi shart: o'girilmasa slot qayta so'raladi.
+    latexToOmml(item.latex || item.display_text || "", { display: true });
+    image = await renderFormula(item.latex || item.display_text || "");
+  }
   else if (item.type === "chart") image = await renderChart({ ...item, title: cleanMediaText(item.title, "Grafik") });
   else if (item.type === "flowchart") image = await renderFlowchart({ ...item, title: cleanMediaText(item.title, "Oqim sxemasi"), caption: cleanMediaText(item.caption), language });
   else return null;
@@ -682,7 +676,7 @@ async function renderAndVerifyMedia(item, language) {
 }
 
 async function generateMediaSlot(slot, { chapter, topic, language, sourceContent, llm }) {
-  const maxTokens = slot.type === "flowchart" ? 1800 : slot.type === "chart" || slot.type === "table" ? 1000 : 500;
+  const maxTokens = slot.type === "flowchart" ? 1800 : slot.type === "chart" || slot.type === "table" ? 1000 : 900;
   const maxAttempts = slot.type === "chart" || slot.type === "table" ? 1 : SLOT_RETRY_LIMIT;
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -988,6 +982,95 @@ async function retryDeficientTextSlots(chapters, outlineChapters, retry, concurr
 }
 
 // в”Ђв”Ђ ASOSIY GENERATSIYA в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+// ── Sahifa moslash yordamchilari ───────────────────────────
+function documentChapterHeadings(chapters) {
+  let mainNumber = 0;
+  return (chapters || []).map(chapter => {
+    const title = normalizeHeadingTitle(chapter.title || "");
+    if (chapter.id === "intro" || chapter.id === "conclusion") return title;
+    mainNumber++;
+    return `${mainNumber}. ${title}`;
+  });
+}
+
+function buildExpansionPrompt({ chapter, group, words, outline, language, sourceContent }) {
+  const paragraphs = Math.max(1, Math.round(words / 130));
+  const source = sourceContent ? `\nManba konteksti (faqat shunga tayangan faktlar):\n---\n${String(sourceContent).slice(0, 1500)}\n---` : "";
+  return `MATNNI KENGAYTIRISH. Mustaqil ish: "${outline.meta?.title || ""}". Til: ${language}.
+Bob: "${chapter.title}"${group.title ? `, ichki bo'lim: "${group.title}"` : ""}.
+Ushbu bo'limning oxirgi paragrafi:
+"""${String(group.lastParagraph || "").slice(0, 1200)}"""
+Shu fikrni MANTIQAN DAVOM ETTIRUVCHI, oldingi matnni takrorlamaydigan, yangi jihat (misol, tahlil, taqqoslash, amaliy ahamiyat) qo'shadigan ${paragraphs} ta paragraf yoz; jami taxminan ${words} so'z (±10%). Rasmiy akademik uslub, birinchi shaxssiz, sarlavha/ro'yxat/media yo'q, manbasiz aniq statistika uydirma.${source}
+Faqat JSON qaytar: {"content":[{"type":"paragraph","text":"..."}]}`;
+}
+
+async function fitDocumentToPages({ spec, pngCache, buf, outline, llm, language, sourceContent, requestedPages }) {
+  const minPages = requestedPages;
+  const maxPages = requestedPages + 1;
+  let chapters = spec.chapters.map(chapter => ({ ...chapter, content: [...(chapter.content || [])] }));
+  let currentBuf = buf;
+  let pageCount = null;
+  let iterations = 0;
+  const MAX_ITERATIONS = 3;
+  for (; iterations <= MAX_ITERATIONS; iterations++) {
+    const measured = measureDocx(currentBuf);
+    if (!measured) return { buf: currentBuf, chapters, status: "skipped", pageCount: null, iterations, reason: "LibreOffice o'lchovi mavjud emas." };
+    pageCount = measured.pageCount;
+    console.log(`[mustaqil] sahifa o'lchovi #${iterations + 1}: ${pageCount} bet (maqsad ${minPages}–${maxPages})`);
+    if (pageCount >= minPages && pageCount <= maxPages) {
+      return { buf: currentBuf, chapters, status: "passed", pageCount, iterations, reason: `Hujjat ${pageCount} bet — so'ralgan ${requestedPages} betga mos.` };
+    }
+    if (iterations === MAX_ITERATIONS) break;
+    const layout = analyzeChapterPages(measured.pages, documentChapterHeadings(chapters));
+    const mainChapterIndexes = chapters.map((chapter, index) => (chapter.id === "intro" || chapter.id === "conclusion") ? -1 : index).filter(index => index >= 0);
+    const plan = planPageAdjustment({ pageCount, minPages, maxPages, layout, mainChapterIndexes });
+    if (!plan.items.length) break;
+    if (plan.action === "shrink") {
+      for (const item of plan.items) {
+        const result = shrinkChapterContent(chapters[item.chapterIndex].content, item.words);
+        chapters[item.chapterIndex] = { ...chapters[item.chapterIndex], content: result.content };
+        console.log(`[mustaqil] qisqartirish: "${chapters[item.chapterIndex].title}" −${result.removed} so'z`);
+      }
+    } else {
+      const jobs = plan.items.map(item => {
+        const chapter = chapters[item.chapterIndex];
+        const groups = sectionGroups(chapter.content);
+        const group = [...groups].sort((a, b) => a.words - b.words)[0] || { endIndex: chapter.content.length - 1, lastParagraph: "", title: null };
+        return { item, chapter, group };
+      });
+      const additions = await mapWithConcurrency(jobs, boundedConcurrency(), async job => {
+        try {
+          const text = await callLLM({
+            system: chapterSystemPrompt(),
+            user: buildExpansionPrompt({ ...job, words: job.item.words, outline, language, sourceContent }),
+            llm,
+            maxTokens: Math.min(6000, 800 + job.item.words * 4),
+          });
+          const parsed = parseChapter(text);
+          return (parsed.content || []).filter(block => block?.type === "paragraph").map(block => block.text);
+        } catch (error) {
+          console.warn(`[mustaqil] kengaytirish xatosi (${job.chapter.title}):`, error.message);
+          return [];
+        }
+      });
+      // Bitta bobga bir nechta qo'shimcha tushsa, indekslar siljimasligi uchun oxiridan qo'shamiz.
+      jobs.map((job, index) => ({ job, paragraphs: additions[index] }))
+        .sort((a, b) => b.job.group.endIndex - a.job.group.endIndex)
+        .forEach(({ job, paragraphs }) => {
+          if (!paragraphs.length) return;
+          const chapterIndex = job.item.chapterIndex;
+          chapters[chapterIndex] = { ...chapters[chapterIndex], content: insertParagraphsAfter(chapters[chapterIndex].content, job.group.endIndex, paragraphs) };
+          console.log(`[mustaqil] kengaytirish: "${job.chapter.title}" +${paragraphs.join(" ").split(/\s+/).length} so'z`);
+        });
+    }
+    currentBuf = await buildDocument({ ...spec, chapters }, pngCache);
+  }
+  return {
+    buf: currentBuf, chapters, status: "approximate", pageCount, iterations,
+    reason: `Hujjat ${pageCount} bet (so'ralgan ${requestedPages}); ${MAX_ITERATIONS} urinishdan keyin eng yaqin variant saqlandi.`,
+  };
+}
+
 async function generateMustaqilIsh({ topic, pages, language, studentName, studentGroup, org, supervisor, sourceContent, llm, outFile, flowchartCount = null, chartCount, chartPlans, formulaCount, formulaPlans, onProgress }) {
   const reportProgress = async (percent, phase) => {
     if (typeof onProgress !== "function") return;
@@ -1361,7 +1444,8 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   if (!finalWordValidation.accepted) {
     const deficient = finalWordValidation.outOfRangeSlots.map(slot => wordRangeDescription(slot));
     if (!finalWordValidation.totalAccepted) deficient.unshift(`umumiy matn ${finalWordValidation.effectiveTotalWords}/${finalWordValidation.effectiveTotalTarget} samarali so'z (aslida ${finalWords}/${totalWt})`);
-    throw new Error(`Mustaqil ish matni qabul oralig'idan tashqarida (oddiy slotlar 85–115%, Kirish/Xulosa 60–115%; ${finalWords}/${totalWt} so'z; muammoli slotlar: ${deficient.join(", ") || "umumiy kontent"}).`);
+    // Buyurtma to'xtamaydi: yakuniy hajm DOCX o'lchovidan keyin sahifa moslash bosqichida tuzatiladi.
+    console.warn(`[mustaqil] Matn hajmi qabul oralig'idan tashqarida (oddiy slotlar 85–115%, Kirish/Xulosa 60–115%; ${finalWords}/${totalWt} so'z; muammoli slotlar: ${deficient.join(", ") || "umumiy kontent"}). Sahifa moslash bilan davom etiladi.`);
   }
 
   chapters = chapters.map((ch, i) => ({
@@ -1372,7 +1456,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   if (!postClampWordValidation.accepted) {
     const details = postClampWordValidation.outOfRangeSlots.map(slot => wordRangeDescription(slot));
     if (!postClampWordValidation.totalAccepted) details.unshift(`umumiy matn ${postClampWordValidation.effectiveTotalWords}/${postClampWordValidation.effectiveTotalTarget} samarali so'z`);
-    throw new Error(`DOCX oldidan matn qabul oralig'idan chiqib ketdi (oddiy slotlar 85–115%, Kirish/Xulosa 60–115%): ${details.join(", ") || "umumiy kontent"}.`);
+    console.warn(`[mustaqil] DOCX oldidan matn qabul oralig'idan chiqib ketdi (oddiy slotlar 85–115%, Kirish/Xulosa 60–115%): ${details.join(", ") || "umumiy kontent"}.`);
   }
   const budgetedWords = chapters.reduce((sum, chapter) => sum + countWords(chapter.content), 0);
   console.log("[mustaqil] Word matn byudjeti:", budgetedWords + "/" + totalWt);
@@ -1390,7 +1474,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   }
   const pngCache = await prerenderMedia(chapters, lang, verifiedCache);
   const spec = { meta:outline.meta, chapters, references:outline.references||[] };
-  const buf  = await buildDocument(spec, pngCache);
+  let buf  = await buildDocument(spec, pngCache);
   const dir  = path.dirname(outFile);
   if(!fs.existsSync(dir)) fs.mkdirSync(dir,{recursive:true});
   const layoutVerification = {
@@ -1400,6 +1484,28 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
     errors: [],
     reason: "PDF/layout tekshiruvi generatsiya sharti emas.",
   };
+
+  // ── SAHIFA SONIGA MOSLASH (LibreOffice bilan haqiqiy o'lchov) ──
+  if (pageFitEnabled()) {
+    await reportProgress(90, "Sahifalar soni tekshirilmoqda");
+    try {
+      const fitted = await fitDocumentToPages({
+        spec, pngCache, buf, outline, llm, language: lang, sourceContent,
+        requestedPages: pagePlanForWork.requestedPages,
+      });
+      buf = fitted.buf;
+      spec.chapters = fitted.chapters;
+      Object.assign(layoutVerification, {
+        status: fitted.status,
+        actualPageCount: fitted.pageCount,
+        reason: fitted.reason,
+        iterations: fitted.iterations,
+      });
+    } catch (error) {
+      console.warn("[mustaqil] sahifa moslash o'tkazib yuborildi:", error.message);
+      layoutVerification.reason = `Sahifa moslash bajarilmadi: ${error.message}`;
+    }
+  }
   fs.writeFileSync(outFile, buf);
   console.log("[mustaqil] tayyor:", outFile, Math.round(buf.length/1024)+"KB");
   await reportProgress(97, "DOCX tayyor, yuborilmoqda");
@@ -1413,7 +1519,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
 
   return {
     outFile,
-    pageCount: null,
+    pageCount: layoutVerification.actualPageCount ?? null,
     plannedPageCount: plannedPages,
     maxExpectedPageCount: pagePlanForWork.maxExpectedPages,
     pageVerification: layoutVerification.status,

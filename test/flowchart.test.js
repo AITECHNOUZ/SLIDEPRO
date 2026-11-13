@@ -88,11 +88,12 @@ test("beshta Graphviz semantik turi to‘g‘ri shakl va yo‘nalishda yaroqli P
   const dots = FLOWCHART_TEMPLATES.map(template => buildFlowchartDot({ ...examples[template.id], diagram_type: template.id }));
   for (const [index, template] of FLOWCHART_TEMPLATES.entries()) {
     const dot = dots[index];
-    assert.match(dot, /fontname="Times New Roman"/, `${template.id}: matn Times New Roman deb belgilansin`);
+    assert.match(dot, /fontname="DejaVu Sans"/, `${template.id}: GOST chizma qoidasi — matn DejaVu Sans`);
+    assert.match(dot, /color="#1f5fa6"/, `${template.id}: oqim strelkalari to'q ko'k #1f5fa6`);
     if (template.id === "algorithm_flowchart") {
       assert.match(dot, /rankdir=TB/);
       assert.match(dot, /shape=diamond/);
-      assert.match(dot, /shape=ellipse/);
+      assert.match(dot, /shape=box, style="rounded,filled"/, "GOST 19.701 terminatori — yumaloq burchakli to'rtburchak");
     }
     if (["functional_block_diagram", "pid_control_system", "process_sequence"].includes(template.id)) assert.match(dot, /rankdir=LR/);
     if (template.id === "pid_control_system") assert.match(dot, /constraint=false/);

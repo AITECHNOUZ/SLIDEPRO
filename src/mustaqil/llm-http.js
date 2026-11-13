@@ -21,22 +21,24 @@ function getRetryDelay(response, attempt) {
   return Math.min(4_000, 500 * (2 ** attempt)) + Math.floor(Math.random() * 200);
 }
 
-async function postJsonWithRetry(url, options, provider, fetchImpl = fetch) {
-  for (let attempt = 0; attempt < LLM_RETRY_LIMIT; attempt++) {
+async function postJsonWithRetry(url, options, provider, fetchImpl = fetch, { timeoutMs = LLM_REQUEST_TIMEOUT_MS, retries = LLM_RETRY_LIMIT } = {}) {
+  const fetchFn = typeof fetchImpl === "function" ? fetchImpl : (...args) => fetch(...args);
+  const limit = Math.max(1, Math.floor(Number(retries) || LLM_RETRY_LIMIT));
+  for (let attempt = 0; attempt < limit; attempt++) {
     const controller = new AbortController();
     const timeout = setTimeout(
-      () => controller.abort(new Error(`${provider} so‘rovi 90 soniyada tugamadi`)),
-      LLM_REQUEST_TIMEOUT_MS,
+      () => controller.abort(new Error(`${provider} so‘rovi ${Math.round(timeoutMs / 1000)} soniyada tugamadi`)),
+      timeoutMs,
     );
     let retryDelay = null;
 
     try {
-      const response = await fetchImpl(url, { ...options, signal: controller.signal });
+      const response = await fetchFn(url, { ...options, signal: controller.signal });
       const body = await response.text();
       if (!response.ok) {
         const error = new Error(`${provider} ${response.status}: ${body.slice(0, 200)}`);
         error.status = response.status;
-        if (isRetryableStatus(response.status) && attempt + 1 < LLM_RETRY_LIMIT) {
+        if (isRetryableStatus(response.status) && attempt + 1 < limit) {
           retryDelay = getRetryDelay(response, attempt);
         } else {
           throw error;
@@ -53,7 +55,7 @@ async function postJsonWithRetry(url, options, provider, fetchImpl = fetch) {
     } catch (error) {
       const retryable = error.retryable !== false
         && (error.status == null || isRetryableStatus(error.status));
-      if (!retryable || attempt + 1 >= LLM_RETRY_LIMIT) throw error;
+      if (!retryable || attempt + 1 >= limit) throw error;
       retryDelay = getRetryDelay(null, attempt);
     } finally {
       clearTimeout(timeout);
@@ -64,4 +66,4 @@ async function postJsonWithRetry(url, options, provider, fetchImpl = fetch) {
   throw new Error(`${provider} so‘rovi belgilangan retry chegarasidan o‘tdi`);
 }
 
-module.exports = { postJsonWithRetry };
+module.exports = { postJsonWithRetry, isRetryableStatus, LLM_REQUEST_TIMEOUT_MS };

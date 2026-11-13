@@ -9,6 +9,8 @@ const MAX_PNG_BYTES = 8 * 1024 * 1024;
 const RENDER_TIMEOUT_MS = 15_000;
 const FLOWCHART_HEIGHT_SCALE = 1.5;
 const FLOWCHART_LABEL_LINE_LENGTH = 20;
+// GOST chizma qoidasi: GOST shriftiga yaqin DejaVu Sans (Docker'da fonts-dejavu o'rnatilgan).
+const FLOWCHART_FONT = process.env.SLIDEPRO_FIGURE_FONT || "DejaVu Sans";
 // DOCX ImageRun uses 96 px per inch; canvas ratio matches these fixed algorithm-diagram dimensions.
 const ALGORITHM_WORD_WIDTH_IN = 1.92;
 const ALGORITHM_WORD_HEIGHT_IN = 3.45;
@@ -70,9 +72,9 @@ function buildFlowchartDot(input, { wrapLabels = true, ranksepMultiplier } = {})
   });
   const lines = [
     "digraph Flowchart {",
-    `  graph [${[...graphAttrs, 'bgcolor="white"', 'pad="0.22"', 'fontname="Times New Roman"'].join(", ")}];`,
-    '  node [color="#457B9D", penwidth=1.4, fontname="Times New Roman", fontsize=12, fontcolor="#18324B", margin="0.16,0.10"];',
-    `  edge [${[...template.edgeAttrs, 'fontname="Times New Roman"', 'fontsize=10', 'fontcolor="#40566B"'].join(", ")}];`,
+    `  graph [${[...graphAttrs, 'bgcolor="white"', 'pad="0.22"', `fontname="${FLOWCHART_FONT}"`].join(", ")}];`,
+    `  node [color="#000000", penwidth=1.8, fontname="${FLOWCHART_FONT}", fontsize=12, fontcolor="#000000", margin="0.16,0.10"];`,
+    `  edge [${[...template.edgeAttrs, `fontname="${FLOWCHART_FONT}"`, 'fontsize=10', 'fontcolor="#000000"'].join(", ")}];`,
   ];
 
   const nodeLine = (node, index) => {
@@ -108,7 +110,7 @@ function buildFlowchartDot(input, { wrapLabels = true, ranksepMultiplier } = {})
     const toIndex = flowchart.nodes.findIndex(node => node.id === edge.to);
     if (template.id === "pid_control_system" && edge.from === flowchart.nodes.find(node => node.kind === "sensor")?.id) {
       // In a left-to-right feedback cycle, Graphviz places the rendered arrowhead at the sensor end unless reversed explicitly.
-      edgeAttributes.push('constraint=false', 'minlen=2', 'color="#A15C45"', 'tailport=s', 'headport=s', 'dir=back');
+      edgeAttributes.push('constraint=false', 'minlen=2', 'color="#1f5fa6"', 'tailport=s', 'headport=s', 'dir=back');
     } else if (template.id === "algorithm_flowchart" && toIndex <= fromIndex) {
       edgeAttributes.push('constraint=false', 'minlen=2');
     }
@@ -139,7 +141,7 @@ function runGraphviz(dot, layoutEngine = "dot") {
     let stdoutBytes = 0;
     let stderr = "";
     const stdout = [];
-    const child = spawn("dot", [`-K${layoutEngine}`, "-Tpng", "-Gdpi=160"], {
+    const child = spawn("dot", [`-K${layoutEngine}`, "-Tpng", "-Gdpi=300"], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -193,14 +195,15 @@ async function renderFlowchart(input) {
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(isAlgorithm
       ? { width: ALGORITHM_CANVAS_WIDTH, height: ALGORITHM_CANVAS_HEIGHT, fit: "contain", withoutEnlargement: false, background: { r: 255, g: 255, b: 255 } }
-      : { width: 1400, height: 1800, fit: "inside", withoutEnlargement: true })
+      : { width: 2400, height: 3000, fit: "inside", withoutEnlargement: true })
     .png()
     .toBuffer();
   const metadata = await sharp(normalizedPng).metadata();
   if (metadata.format !== "png" || !metadata.width || !metadata.height) {
     throw new Error("flowchart: yaroqli PNG rasm olinmadi");
   }
-  const scale = isAlgorithm ? 1 : Math.min(520 / metadata.width, 620 / metadata.height, 1);
+  // Word'da ~6,2 dyuym (595 px) kenglikdan oshmaydi; 300 dpi manba aniq ko'rinadi.
+  const scale = isAlgorithm ? 1 : Math.min(595 / metadata.width, 760 / metadata.height, 1);
   return {
     buf: normalizedPng,
     width: isAlgorithm ? ALGORITHM_WORD_WIDTH_IN * WORD_PIXELS_PER_INCH : Math.max(1, Number((metadata.width * scale).toFixed(6))),

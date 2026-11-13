@@ -2,10 +2,13 @@
 FROM node:20-slim
 
 # sharp va better-sqlite3 uchun build vositalari + SVG matn uchun shriftlar
+# LibreOffice (writer+math) + poppler-utils: tayyor DOCX ni PDF'ga aylantirib haqiqiy
+# sahifalar sonini o'lchash va so'ralgan sahifaga moslash uchun (src/mustaqil/page-fit.js)
 # fontconfig + DejaVu shriftlar: diagrammalardagi matn □□□ bo'lib qolmasligi uchun
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-matplotlib make g++ \
     graphviz \
+    libreoffice-writer libreoffice-math poppler-utils \
     fontconfig fonts-dejavu-core fonts-dejavu-extra fonts-liberation \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*

@@ -17,6 +17,8 @@ const { completeBibliography, sortReferencesAPA, parseApaPartsForDisplay } = req
 const { cleanMediaText, isSyntheticSource } = require("./media-captions");
 const { normalizeChartData } = require("./chart-data");
 const { normalizeFlowchartData } = require("./flowchart-data");
+const JSZip = require("jszip");
+const { safeLatexToOmml, OMML_NAMESPACE } = require("./omml");
 
 const mm = (n) => Math.round(n * 56.692);
 
@@ -28,6 +30,56 @@ const INDENT = mm(12.5);     // 1.25 sm
 const BLACK = "000000";
 const A4_PAGE_WIDTH_PX = 210 / 25.4 * 96;
 const A4_PAGE_HEIGHT_PX = 297 / 25.4 * 96;
+// GOST chizmalari ~6,2 dyuym (595 px) kenglikda: matn maydoni 165 mm = 624 px ichiga sig'adi.
+const FIGURE_PAGE_FRACTION = 0.76;
+
+// ─── OMML (Word native tenglama) ───────────────────────────
+// Paragraf qurilayotganda formula o'rniga noyob belgi (token) qo'yiladi; Packer DOCX ni
+// yig'gandan keyin document.xml ichida shu token turgan <w:r> butunlay <m:oMath> bilan
+// almashtiriladi. Natija — Word'da tahrirlanadigan haqiqiy tenglama (rasm emas).
+let activeMath = null;
+const mathToken = (index) => `\u27E6OMML${index}\u27E7`;
+
+function mathTokenRun(omml) {
+  if (!activeMath || !omml) return null;
+  activeMath.push(omml);
+  return new TextRun({ text: mathToken(activeMath.length - 1), font: FONT, size: FONT_SIZE, color: BLACK });
+}
+
+// Matndagi $...$, \(...\), \[...\], $$...$$ bo'laklarini ajratish
+const INLINE_MATH_RE = /\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$([^$\n]+?)\$/g;
+
+function splitInlineMath(text) {
+  const parts = [];
+  const source = String(text || "");
+  let last = 0;
+  let match;
+  INLINE_MATH_RE.lastIndex = 0;
+  while ((match = INLINE_MATH_RE.exec(source)) !== null) {
+    // "100$" kabi valyuta belgisini formula deb olmaymiz
+    if (match[4] != null && /\d\s?$/.test(source.slice(0, match.index))) continue;
+    if (match.index > last) parts.push({ text: source.slice(last, match.index) });
+    parts.push({ math: match[1] ?? match[2] ?? match[3] ?? match[4], raw: match[0] });
+    last = match.index + match[0].length;
+  }
+  if (last < source.length) parts.push({ text: source.slice(last) });
+  return parts;
+}
+
+async function injectOmml(buffer, formulas) {
+  if (!formulas || !formulas.length) return buffer;
+  const zip = await JSZip.loadAsync(buffer);
+  const file = zip.file("word/document.xml");
+  if (!file) return buffer;
+  let xml = await file.async("string");
+  const runRe = /<w:r>(?:(?!<\/w:r>)[\s\S])*?\u27E6OMML(\d+)\u27E7(?:(?!<\/w:r>)[\s\S])*?<\/w:r>/g;
+  xml = xml.replace(runRe, (whole, index) => formulas[Number(index)] || whole);
+  if (!/xmlns:m=/.test(xml.slice(0, 4000))) {
+    xml = xml.replace(/<w:document\b/, `<w:document xmlns:m="${OMML_NAMESPACE}"`);
+  }
+  zip.file("word/document.xml", xml);
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
 
 // ─── inline LaTeX tozalash (sarlavha/izoh uchun — matn qaytaradi) ──
 function cleanInlineLatex(text) {
@@ -121,8 +173,20 @@ function run(text, opts = {}) {
 }
 
 function para(text, opts = {}) {
-  // parseTextRuns ishlatiladi: X_sub → Word subscript, X^sup → superscript
-  const runs = parseTextRuns(String(text || ""));
+  // $...$ ichidagi formulalar → inline OMML; qolgan matn parseTextRuns orqali
+  // (X_sub → Word subscript, X^sup → superscript).
+  const runs = [];
+  for (const part of splitInlineMath(String(text || ""))) {
+    if (part.math != null) {
+      const omml = activeMath ? safeLatexToOmml(part.math, { display: false }) : null;
+      const token = omml ? mathTokenRun(omml) : null;
+      if (token) runs.push(token);
+      else runs.push(...parseTextRuns(part.raw));
+    } else if (part.text) {
+      runs.push(...parseTextRuns(part.text));
+    }
+  }
+  if (!runs.length) runs.push(...parseTextRuns(""));
   // bold/italic opts qo'llash kerak bo'lsa — barcha runlarga qo'shamiz
   if (opts.bold || opts.italic) {
     runs.forEach(r => { if (opts.bold) r.bold = true; if (opts.italic) r.italics = true; });
@@ -434,9 +498,23 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
         nodes.push(item.level === 2 ? heading2(item.text || "") : heading1(item.text || ""));
         break;
       case "formula": {
-        const media = pngCache && pngCache.get("f_" + item.number);
         const caption = numberedMediaCaption(item.number, "formula", item.caption, item.display_text, item.latex);
-        if (media) {
+        // 1) Asosiy yo'l: Word native tenglama (OMML)
+        const omml = activeMath ? safeLatexToOmml(item.latex, { display: true }) : null;
+        const token = omml ? mathTokenRun(omml) : null;
+        const media = pngCache && pngCache.get("f_" + item.number);
+        if (token) {
+          nodes.push(new Paragraph({
+            children: [token],
+            spacing: { ...LINE_SPACING, before: mm(3), after: mm(1) },
+            keepNext: true,
+            keepLines: true,
+            alignment: AlignmentType.CENTER,
+            indent: undefined,
+          }));
+          nodes.push(captionPara(`(${caption})`));
+        } else if (media) {
+          // 2) Zaxira: MathJax PNG (LaTeX OMML ga o'girilmasa)
           nodes.push(...imageBlock(media, `(${caption})`));
         } else {
           nodes.push(new Paragraph({
@@ -445,6 +523,12 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
             alignment: AlignmentType.CENTER, indent: undefined,
           }));
           nodes.push(captionPara(`(${caption})`));
+        }
+        // "bu yerda: U — kuchlanish, V; ..." — belgilarning izohi (GOST 7.32 talabi)
+        const where = String(item.where || item.explanation || "").trim();
+        if (where) {
+          const whereText = /^bu yerda|^где|^where/i.test(where) ? where : `bu yerda ${where}`;
+          nodes.push(para(whereText, { noIndent: true, align: AlignmentType.JUSTIFIED }));
         }
         break;
       }
@@ -456,7 +540,7 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
           ? `${chartCaption} Manba/izoh: ${dataSource}`
           : chartCaption;
         if (media) {
-          nodes.push(...imageBlock(media, captionWithSource));
+          nodes.push(...imageBlock(media, captionWithSource, { maxPageFraction: FIGURE_PAGE_FRACTION }));
         } else {
           // Render qilinmagan bo'lsa — ma'lumotni matn ko'rinishida ko'rsatamiz,
           // hech bo'lmaganda grafik ma'lumoti hujjatda yo'qolmaydi
@@ -477,7 +561,7 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
         const media = pngCache && pngCache.get("d_" + item.number);
         const caption = numberedMediaCaption(item.number, "rasm", item.caption, item.title);
         if (media) {
-          nodes.push(...imageBlock(media, caption));
+          nodes.push(...imageBlock(media, caption, { maxPageFraction: FIGURE_PAGE_FRACTION }));
         } else {
           console.warn(`[mustaqil] flowchart #${item.number} render qilinmagan — matn ko'rinishida chiqariladi`);
           nodes.push(captionPara(caption));
@@ -537,6 +621,11 @@ async function buildDocument(fullSpec, pngCache) {
   // Joriy yilni majburiy o'rnatish (LLM eski yil yozishi mumkin)
   if (meta) meta.year = String(new Date().getFullYear());
 
+  // Sinxron qurilish davomida formulalar shu ro'yxatga yig'iladi (parallel buyurtmalar
+  // bir-biriga aralashmaydi: tugunlar qurilishi orasida await yo'q).
+  const formulas = [];
+  activeMath = formulas;
+  try {
   const coverNodes = buildCoverPage(meta);
   const rejaNodes  = buildReja(chapters, meta);
 
@@ -591,7 +680,12 @@ async function buildDocument(fullSpec, pngCache) {
     ],
   });
 
-  return Packer.toBuffer(doc);
+  activeMath = null;
+  const packed = await Packer.toBuffer(doc);
+  return injectOmml(packed, formulas);
+  } finally {
+    if (activeMath === formulas) activeMath = null;
+  }
 }
 
-module.exports = { buildDocument, buildRejaItems };
+module.exports = { buildDocument, buildRejaItems, splitInlineMath, injectOmml };

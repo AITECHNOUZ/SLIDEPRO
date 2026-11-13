@@ -62,9 +62,9 @@ async function generatePresentation({ topic, slides, sourceContent, extra, palet
     topic, slides, sourceContent, studentName, studentGroup,
     provider: (llm && llm.provider) || "anthropic",
     anthropicKey: llm && llm.anthropicKey,
-    anthropicModel: (llm && llm.anthropicModel) || process.env.MODEL || "claude-sonnet-4-6",
+    anthropicModel: (llm && llm.anthropicModel) || process.env.ANTHROPIC_MODEL || process.env.MODEL || "claude-sonnet-5-5",
     openaiKey: llm && llm.openaiKey,
-    openaiModel: (llm && llm.openaiModel) || process.env.OPENAI_MODEL || "gpt-4o",
+    openaiModel: (llm && llm.openaiModel) || process.env.OPENAI_MODEL || "gpt-5-mini",
   });
 
   // Tuzilma kafolati: titul + reja + xulosa + adabiyotlar qo'shiladi

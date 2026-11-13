@@ -86,7 +86,7 @@ async function fulfillOrder(orderId) {
     }
 
     const caption = isMustaqil
-      ? "📄 Mustaqil ishingiz tayyor!\n\n📌 Mavzu: " + order.topic + "\n📋 Sahifalar: " + (order.pages||15) + " ta"
+      ? "📄 Mustaqil ishingiz tayyor!\n\n📌 Mavzu: " + order.topic + "\n📋 Sahifalar: " + (res.pageCount || order.pages || 15) + " ta"
       : "🎉 Taqdimot tayyor!\n\n📌 Mavzu: " + order.topic + "\n📄 Slaydlar: " + res.slideCount + " ta";
 
     // 3) KANALGA YUBORISH (kesh uchun file_id olamiz)

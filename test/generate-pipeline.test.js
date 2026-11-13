@@ -214,9 +214,11 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
     assert.ok(fs.statSync(outFile).size > 5_000);
     const archive = await JSZip.loadAsync(fs.readFileSync(outFile));
     const mediaFiles = Object.keys(archive.files).filter(name => name.startsWith("word/media/") && !archive.files[name].dir);
-    assert.equal(mediaFiles.length, 6, "ikkita formula, ikkita chart va ikkita Graphviz PNG Word fayliga qo'shiladi");
+    assert.equal(mediaFiles.length, 4, "formulalar OMML (rasm emas); ikkita chart va ikkita Graphviz PNG Word fayliga qo'shiladi");
     const documentXml = await archive.file("word/document.xml").async("string");
-    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 6);
+    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 4);
+    assert.ok((documentXml.match(/<m:oMath>/g) || []).length >= 2, "ikkala formula Word native tenglama (OMML) bo'lib yoziladi");
+    assert.doesNotMatch(documentXml, /\u27E6OMML/, "OMML tokenlari to'liq almashtiriladi");
     assert.doesNotMatch(documentXml, /sintetik|synthetic|real o(?:'|&apos;)lchov emas|haqiqiy tajriba o(?:'|&apos;)lchovi emas/i,
       "yakuniy hujjatdagi media nomlari va captionlarida sun'iy ma'lumot disclosure'i bo'lmasin");
     assert.match(documentXml, /1-formula\. Tizim modeli/);

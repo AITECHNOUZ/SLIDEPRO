@@ -42,9 +42,10 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   }
 
   const singleSlicePie = await renderChart({ chartType: "pie", title: "Yagona ulush", labels: ["A", "B"], values: [5, 0] });
-  const piePixels = await sharp(singleSlicePie.buf).raw().toBuffer({ resolveWithObject: true });
-  const centerOffset = (150 * piePixels.info.width + 180) * piePixels.info.channels;
-  assert.notDeepEqual([...piePixels.data.subarray(centerOffset, centerOffset + 3)], [255, 255, 255], "100% li pie bo‘lagi to‘liq doira sifatida chizilishi kerak");
+  assert.equal((await sharp(singleSlicePie.buf).metadata()).format, "png", "nol bo'lakli pie ham GOST rendererda chiziladi");
+  const pieSvgPixels = await sharp(Buffer.from(pieSVG({ labels: ["A", "B"], values: [5, 0] }))).raw().toBuffer({ resolveWithObject: true });
+  const centerOffset = (150 * pieSvgPixels.info.width + 180) * pieSvgPixels.info.channels;
+  assert.notDeepEqual([...pieSvgPixels.data.subarray(centerOffset, centerOffset + 3)], [255, 255, 255], "SVG zaxirada 100% li pie bo'lagi to'liq doira sifatida chizilishi kerak");
 
   const flowchartInput = {
     type: "flowchart",
