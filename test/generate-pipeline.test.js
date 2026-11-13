@@ -299,9 +299,10 @@ test("Graphviz renderlari yiqilsa ham pipeline qolgan media bilan DOCX tayyorlay
     assert.equal(fs.existsSync(outFile), true, "bitta Graphviz muammosi hujjatni bekor qilmasin");
     const archive = await JSZip.loadAsync(fs.readFileSync(outFile));
     const mediaFiles = Object.keys(archive.files).filter(name => name.startsWith("word/media/") && !archive.files[name].dir);
-    assert.equal(mediaFiles.length, 4, "valid formula/chart rasmlari qoladi, render xatosi bo‘lgan flowchart rasmlari kiritilmaydi");
+    assert.equal(mediaFiles.length, 2, "valid chart rasmlari qoladi (formulalar OMML), render xatosi bo‘lgan flowchart rasmlari kiritilmaydi");
     const documentXml = await archive.file("word/document.xml").async("string");
-    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 4);
+    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 2);
+    assert.ok((documentXml.match(/<m:oMath>/g) || []).length >= 2, "formulalar Word native tenglama bo'lib qoladi");
     assert.match(documentXml, /\[Oqim sxemasi:/, "flowchart rasm bo‘lmasa ham uning xavfsiz matnli fallbacki qoladi");
   } finally {
     global.fetch = originalFetch;

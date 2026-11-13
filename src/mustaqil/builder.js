@@ -258,15 +258,16 @@ function numberedMediaCaption(number, type, ...values) {
 }
 
 // ─── rasm bloki ────────────────────────────────────────────
-function imageBlock(media, caption, { maxPageFraction = 0.6 } = {}) {
+function imageBlock(media, caption, { maxPageFraction = 0.6, maxHeightFraction = 0.6 } = {}) {
   const buf = media.buf || media;
   const w = media.width || 440;
   const h = media.height || 200;
+  const heightFraction = maxPageFraction ? Math.min(maxPageFraction, maxHeightFraction) : null;
   const scale = maxPageFraction
-    ? Math.min(1, A4_PAGE_WIDTH_PX * maxPageFraction / w, A4_PAGE_HEIGHT_PX * maxPageFraction / h)
+    ? Math.min(1, A4_PAGE_WIDTH_PX * maxPageFraction / w, A4_PAGE_HEIGHT_PX * heightFraction / h)
     : 1;
   const maxWidth = maxPageFraction ? Math.floor(A4_PAGE_WIDTH_PX * maxPageFraction) : Infinity;
-  const maxHeight = maxPageFraction ? Math.floor(A4_PAGE_HEIGHT_PX * maxPageFraction) : Infinity;
+  const maxHeight = maxPageFraction ? Math.floor(A4_PAGE_HEIGHT_PX * heightFraction) : Infinity;
   const imageWidth = Math.max(1, Math.min(maxWidth, Math.round(w * scale)));
   const imageHeight = Math.max(1, Math.min(maxHeight, Math.round(h * scale)));
   const nodes = [];

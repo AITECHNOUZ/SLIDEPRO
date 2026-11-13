@@ -416,7 +416,7 @@ test("lug'atda yo'q inglizcha Graphviz atamasi ham kodni to'xtatmaydi", () => {
   }, [{ ...throughput, caption }], "o'zbek")[0];
   assert.match(aligned.title, /Throughput API/);
   assert.match(aligned.nodes[1].label, /Throughput API/);
-  assert.match(buildFlowchartDot(aligned), /Throughput API/);
+  assert.match(buildFlowchartDot(aligned), /Throughput(?:\\n| )API/, "gorizontal sxemada uzun yorliq qatorga o'raladi, matn saqlanadi");
   assert.match(aligned.caption, /Izoh:/);
   assert.doesNotMatch(aligned.caption, /Atamalar:/);
   assert.equal(validatePlannedMedia([{ content: [aligned] }], [{

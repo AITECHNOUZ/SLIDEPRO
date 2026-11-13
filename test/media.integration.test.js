@@ -75,8 +75,8 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   const flowchart = await renderFlowchart(flowchartInput);
   const flowchartMetadata = await sharp(flowchart.buf).metadata();
   assert.equal(flowchartMetadata.format, "png");
-  assert.ok(flowchart.width > 0 && flowchart.width <= 520);
-  assert.ok(flowchart.height > 0 && flowchart.height <= 620);
+  assert.ok(flowchart.width > 0 && flowchart.width <= 595);
+  assert.ok(flowchart.height > 0 && flowchart.height <= 760);
   assert.ok(Math.abs(flowchart.width / flowchart.height - flowchartMetadata.width / flowchartMetadata.height) < 0.01, "qator oralig‘i oshganda rasm proporsiyasi saqlansin");
   imageCache.set("d_2", flowchart);
 
@@ -181,9 +181,10 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   const zip = await JSZip.loadAsync(docx);
   const documentXml = await zip.file("word/document.xml").async("string");
   const mediaEntries = Object.entries(zip.files).filter(([name, entry]) => name.startsWith("word/media/") && !entry.dir);
-  assert.equal(mediaEntries.length, 7, "formula, chart va uchta Graphviz rasm fayli DOCX ichida bo'lishi kerak");
+  assert.equal(mediaEntries.length, 5, "chart va uchta Graphviz rasm fayli DOCX ichida; formulalar rasm emas, OMML");
+  assert.ok((documentXml.match(/<m:oMath>/g) || []).length >= 2, "formulalar Word native tenglama (OMML) bo'lib yoziladi");
   const imageParagraphs = (documentXml.match(/<w:p\b[\s\S]*?<\/w:p>/g) || []).filter(paragraph => paragraph.includes("<w:drawing>"));
-  assert.equal(imageParagraphs.length, 7, "barcha yettita rasm alohida DOCX paragrafida joylashishi kerak");
+  assert.equal(imageParagraphs.length, 5, "barcha beshta rasm alohida DOCX paragrafida joylashishi kerak");
   assert.ok(imageParagraphs.every(paragraph => /<w:keepNext\b/.test(paragraph)), "har bir rasm ostyozuv paragrafi bilan birga keyingi sahifaga ko'chishi kerak");
   assert.match(documentXml, /1-rasm\. Sinov diagrammasi/);
   assert.match(documentXml, /2-rasm\. Ichimlik suvini tozalash tarkibi/);
@@ -205,7 +206,7 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   assert.equal((referencesXml.match(/https:\/\/doi\.org\/10\./g) || []).length, 12);
 });
 
-test("DOCX’dagi barcha diagrammalar sahifa eni/balandligining 60 foizidan oshmaydi va nisbatini saqlaydi", async () => {
+test("DOCX’dagi GOST diagrammalari sahifa enining 76, balandligining 60 foizidan oshmaydi va nisbatini saqlaydi", async () => {
   const widePng = await sharp({
     create: { width: 2000, height: 1000, channels: 4, background: { r: 230, g: 240, b: 250, alpha: 1 } },
   }).png().toBuffer();
@@ -246,12 +247,12 @@ test("DOCX’dagi barcha diagrammalar sahifa eni/balandligining 60 foizidan oshm
     return { width: Number(extent[1]), height: Number(extent[2]) };
   });
   extents.forEach(({ width, height }) => {
-    assert.ok(width <= 210 * 36_000 * 0.6, "rasm eni sahifa enining 60 foizidan oshmasin");
+    assert.ok(width <= 210 * 36_000 * 0.76, "rasm eni sahifa enining 76 foizidan (≈6,2 dyuym) oshmasin");
     assert.ok(height <= 297 * 36_000 * 0.6, "rasm bo‘yi sahifa balandligining 60 foizidan oshmasin");
   });
   assert.ok(Math.abs(extents[0].width / extents[0].height - 2) < 0.01, "keng rasm proporsiyasi o‘zgarmasin");
   assert.ok(Math.abs(extents[1].width / extents[1].height - 0.5) < 0.01, "baland rasm proporsiyasi o‘zgarmasin");
-  assert.ok(Math.abs(extents[0].width - 210 * 36_000 * 0.6) < 9_525, "keng tasvir 60 foizlik en limitiga qisqartirilsin");
+  assert.ok(Math.abs(extents[0].width - 210 * 36_000 * 0.76) < 9_525, "keng tasvir 76 foizlik en limitiga qisqartirilsin");
   assert.ok(Math.abs(extents[1].height - 297 * 36_000 * 0.6) < 9_525, "baland tasvir 60 foizlik balandlik limitiga qisqartirilsin");
 });
 

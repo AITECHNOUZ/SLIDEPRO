@@ -73,12 +73,13 @@ function buildFlowchartDot(input, { wrapLabels = true, ranksepMultiplier } = {})
   const lines = [
     "digraph Flowchart {",
     `  graph [${[...graphAttrs, 'bgcolor="white"', 'pad="0.22"', `fontname="${FLOWCHART_FONT}"`].join(", ")}];`,
-    `  node [color="#000000", penwidth=1.8, fontname="${FLOWCHART_FONT}", fontsize=12, fontcolor="#000000", margin="0.16,0.10"];`,
-    `  edge [${[...template.edgeAttrs, `fontname="${FLOWCHART_FONT}"`, 'fontsize=10', 'fontcolor="#000000"'].join(", ")}];`,
+    // Gorizontal (LR) sxemalar Word'da 6,2 dyuymga siqiladi — yozuv kichrayib ketmasligi uchun shrift kattaroq.
+    `  node [color="#000000", penwidth=1.8, fontname="${FLOWCHART_FONT}", fontsize=${horizontal ? 16 : 12}, fontcolor="#000000", margin="0.16,0.10"];`,
+    `  edge [${[...template.edgeAttrs, `fontname="${FLOWCHART_FONT}"`, `fontsize=${horizontal ? 14 : 10}`, 'fontcolor="#000000"'].join(", ")}];`,
   ];
 
   const nodeLine = (node, index) => {
-    const displayLabel = wrapLabels ? wrapFlowchartLabel(node.label) : node.label;
+    const displayLabel = wrapLabels ? wrapFlowchartLabel(node.label, horizontal ? 12 : FLOWCHART_LABEL_LINE_LENGTH) : node.label;
     const label = escapeDotText(node.kind === "actor" ? `«actor»\n${displayLabel}` : displayLabel);
     const options = template.nodeAttrs[node.kind];
     return `    ${node.id} [label="${label}", ${options}];`;

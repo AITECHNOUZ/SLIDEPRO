@@ -206,8 +206,12 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
       : null;
     const ordinal = chartAssignments.size;
     const fallbackTypes = ["line", "bar", "pie"];
+    // Klassik juftlik (bar + line): oldingi grafik majburan "line" bo'lgan bo'lsa (masalan, matematik
+    // grafik), keyingisiga qolgan turni beramiz — ikkalasi ham line bo'lib qolmasin.
+    const usedTypes = [...chartAssignments.values()].map(item => item.chartType);
+    const remainingClassic = explicitClassicTypes ? explicitClassicTypes.filter(type => !usedTypes.includes(type)) : [];
     const chartType = explicitClassicTypes
-      ? explicitClassicTypes[ordinal]
+      ? (remainingClassic[0] || explicitClassicTypes[ordinal])
       : (["bar", "line", "pie"].includes(candidate.chapter.chart_type) ? candidate.chapter.chart_type : fallbackTypes[ordinal % fallbackTypes.length]);
     const chartPlan = fixedChartPlans[ordinal] || sourceChart || {
         title: `${candidate.chapter.title || fallbackMainTitle(topic, candidate.index)}: asosiy ko'rsatkichlar`,
