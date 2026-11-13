@@ -8,7 +8,7 @@ const RENDER_TIMEOUT_MS = 20_000;
 const SCRIPT_PATH = path.join(__dirname, "matplotlib-renderer.py");
 let fontFallbackReported = false;
 
-function runMatplotlib(data) {
+function runMatplotlib(data, scriptPath = SCRIPT_PATH) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let timedOut = false;
@@ -16,7 +16,7 @@ function runMatplotlib(data) {
     let stderr = "";
     const chunks = [];
     const python = process.env.SLIDEPRO_PYTHON || process.env.PYTHON || "python3";
-    const child = spawn(python, [SCRIPT_PATH], {
+    const child = spawn(python, [scriptPath], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       env: { ...process.env, MPLBACKEND: "Agg" },

@@ -4,7 +4,7 @@ const JSZip = require("jszip");
 const sharp = require("sharp");
 const { renderFormula } = require("../src/mustaqil/formula");
 const { renderChart, wrapLabelLines, barSVG, lineSVG, pieSVG } = require("../src/mustaqil/chart");
-const { buildFlowchartDot, renderFlowchart } = require("../src/mustaqil/flowchart");
+const { buildFlowchartDot, renderFlowchart, renderGraphvizFlowchart } = require("../src/mustaqil/flowchart");
 const { buildDocument } = require("../src/mustaqil/builder");
 const { prerenderMedia } = require("../src/mustaqil/generate");
 
@@ -97,12 +97,17 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   };
   const algorithmFlowchart = await renderFlowchart(algorithmFlowchartInput);
   const algorithmMetadata = await sharp(algorithmFlowchart.buf).metadata();
-  assert.equal(algorithmMetadata.width, 576);
-  assert.equal(algorithmMetadata.height, 1035);
-  assert.equal(algorithmFlowchart.width, 1.92 * 96);
-  assert.equal(algorithmFlowchart.height, 3.45 * 96);
+  // GOST sxema 1:1 masshtabda (300 dpi): Word'dagi o'lcham PNG o'lchamiga aynan mos
+  assert.ok(Math.abs(algorithmFlowchart.width - algorithmMetadata.width / 300 * 96) < 0.5, "algoritm sxemasi 1:1 masshtabda joylanadi");
+  assert.ok(algorithmFlowchart.width >= 2 * 96 && algorithmFlowchart.width <= 595, "algoritm sxemasi o'qiladigan kenglikda (≥2 dyuym, ≤6,2 dyuym)");
   assert.ok(Math.abs(algorithmFlowchart.width / algorithmFlowchart.height - algorithmMetadata.width / algorithmMetadata.height) < 0.001,
-    "vertikal algoritm rasmi 1.92 × 3.45 dyuymga aynan mos nisbatda saqlansin");
+    "vertikal algoritm rasmi proporsiyasi saqlansin");
+  const graphvizAlgorithm = await renderGraphvizFlowchart(algorithmFlowchartInput);
+  const graphvizMetadata = await sharp(graphvizAlgorithm.buf).metadata();
+  assert.equal(graphvizMetadata.width, 576, "Graphviz zaxira renderi avvalgi 1.92 × 3.45 dyuymli kanvasni saqlaydi");
+  assert.equal(graphvizMetadata.height, 1035);
+  assert.equal(graphvizAlgorithm.width, 1.92 * 96);
+  assert.equal(graphvizAlgorithm.height, 3.45 * 96);
   imageCache.set("d_5", algorithmFlowchart);
 
   const controllerFlowchart = await renderFlowchart({
@@ -190,7 +195,11 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   assert.match(documentXml, /2-rasm\. Ichimlik suvini tozalash tarkibi/);
   assert.match(documentXml, /3-rasm\. Ikkinchi diagramma/);
   assert.match(documentXml, /5-rasm\. Suv sifatini tekshirish algoritmi/);
-  assert.match(documentXml, /<wp:extent cx="1752600" cy="3152775"\/>/, "algoritm rasmi Word hujjatida 1.92 × 3.45 dyuymga mos o‘lchamda qoladi");
+  const algorithmEmu = Math.round(algorithmFlowchart.width / 96 * 914400);
+  const algorithmExtent = documentXml.match(/<wp:extent cx="(\d+)" cy="(\d+)"\/>/g)
+    .map(item => item.match(/cx="(\d+)"/)[1]).map(Number)
+    .some(cx => Math.abs(cx - algorithmEmu) < 9525 * 2);
+  assert.ok(algorithmExtent, "algoritm sxemasi Word hujjatida 1:1 masshtabdagi o'lchamida qoladi");
   assert.match(documentXml, /Manba\/izoh: Official statistical yearbook/, "haqiqiy manba chart ostyozuvida saqlansin");
   assert.match(documentXml, /4-rasm\. PID boshqaruv tizimining tarkibi/);
   assert.match(documentXml, /\(1-formula\. Sinov formulasi\)/);

@@ -148,7 +148,8 @@ test("media LLM so'rovlari formula, grafik, Graphviz va jadval uchun qisqa struk
   assert.match(flowPrompt, /DOT yoki kod qaytarma/);
   assert.match(flowPrompt, /Tanlangan va o‘zgarmas diagram_type: uml_software_architecture/);
   assert.match(flowPrompt, /haqiqiy dasturiy komponent, klass, interfeys/);
-  assert.match(flowPrompt, /Graphviz/i);
+  assert.match(flowPrompt, /blok-sxema uchun JSON/i);
+  assert.match(flowPrompt, /GOST 19\.701/);
   assert.match(flowPrompt, /Suvni tozalash/);
   assert.match(flowPrompt, /Dastur arxitekturasi bo‘lmagan mavzuda bu turdan foydalanma/);
   assert.match(flowPrompt, /generic to‘ldiruvchilar/);

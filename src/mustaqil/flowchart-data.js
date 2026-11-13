@@ -125,7 +125,8 @@ function localizeUzbekText(value, language) {
     const escaped = english.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     text = text.replace(new RegExp(`\\b${escaped}\\b`, "gi"), uzbek);
   }
-  return text;
+  // "PID rostlagich" → "...differensial rostlagich rostlagich" kabi takrorlarni olib tashlash
+  return text.replace(/\b([\p{L}'’ʻ-]+)(\s+\1\b)+/giu, "$1");
 }
 
 function requiredUzbekTranslations(flowchart) {

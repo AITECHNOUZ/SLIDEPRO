@@ -153,8 +153,10 @@ def style_axes(ax):
         ax.spines[side].set_visible(False)
     for side in ("left", "bottom"):
         ax.spines[side].set_color(BLACK)
-        ax.spines[side].set_linewidth(1.0)
-    ax.tick_params(colors=BLACK, width=0.9, length=4)
+        ax.spines[side].set_linewidth(1.3)
+    ax.tick_params(colors=BLACK, width=1.1, length=5, direction="in")
+    ax.minorticks_on()
+    ax.tick_params(which="minor", length=2.5, width=0.8, direction="in", colors=BLACK)
     ax.grid(True, axis="both", alpha=0.25, linewidth=0.7, linestyle="-", color="#808080")
     ax.set_axisbelow(True)
 
@@ -190,10 +192,15 @@ def plot_mathematical_graph(data, ax):
                 raise ValueError(f"function {index + 1} has no finite values in the selected interval")
             y = np.where(finite, y, np.nan)
             style = LINE_STYLES[index % len(LINE_STYLES)]
-            ax.plot(x, y, linewidth=2.0, color=style["color"], linestyle=style["linestyle"],
+            ax.plot(x, y, linewidth=2.4, color=style["color"], linestyle=style["linestyle"],
                     label=str(item.get("name") or f"f{index + 1}(x)"))
-    ax.axhline(0, color=BLACK, linewidth=0.8)
-    ax.axvline(0, color=BLACK, linewidth=0.8)
+    # Koordinata o'qlari faqat oraliqqa tushsa chiziladi (aks holda grafik siqilib qoladi)
+    ax.set_xlim(x_min, x_max)
+    if x_min < 0 < x_max:
+        ax.axvline(0, color=BLACK, linewidth=0.9)
+    y_low, y_high = ax.get_ylim()
+    if y_low < 0 < y_high:
+        ax.axhline(0, color=BLACK, linewidth=0.9)
     ax.set_xlabel(str(data.get("x_label") or "x"))
     ax.set_ylabel(axis_label(data.get("y_label") or "f(x)", data.get("unit")))
     draw_threshold(ax, data)
@@ -215,14 +222,14 @@ def plot_series(ax, labels, series, chart_type):
             if values.shape != x.shape or not np.isfinite(values).all():
                 raise ValueError("each series must match labels and contain finite numbers")
             style = LINE_STYLES[index % len(LINE_STYLES)]
-            ax.plot(x, values, linewidth=2.0, markersize=5.5, markerfacecolor="white", markeredgewidth=1.4,
+            ax.plot(x, values, linewidth=2.4, markersize=6.5, markerfacecolor="white", markeredgewidth=1.4,
                     label=series_label(item, index, len(series)), **style)
             if len(series) == 1:
                 for xi, yi in zip(x, values):
-                    ax.annotate(comma_number(yi), (xi, yi), textcoords="offset points", xytext=(0, 7),
-                                ha="center", fontsize=9, color=BLACK)
+                    ax.annotate(comma_number(yi), (xi, yi), textcoords="offset points", xytext=(0, 8),
+                                ha="center", fontsize=10.5, color=BLACK)
     elif chart_type == "bar":
-        group_width = 0.78
+        group_width = 0.6 if len(series) == 1 else 0.8
         bar_width = group_width / len(series)
         for index, item in enumerate(series):
             values = np.asarray(item.get("values"), dtype=float)
@@ -239,12 +246,14 @@ def plot_series(ax, labels, series, chart_type):
                     va = "bottom" if value >= 0 else "top"
                     ax.annotate(comma_number(value), (rect.get_x() + rect.get_width() / 2, height if value >= 0 else value),
                                 textcoords="offset points", xytext=(0, 3 if value >= 0 else -3),
-                                ha="center", va=va, fontsize=9, color=BLACK)
+                                ha="center", va=va, fontsize=11, color=BLACK)
         ax.axhline(0, color=BLACK, linewidth=1.0, zorder=4)
     else:
         raise ValueError("chart type must be bar or line")
     ax.set_xticks(x, [wrap_label(str(label)) for label in labels])
-    ax.margins(y=0.12)
+    ax.tick_params(axis="x", which="minor", bottom=False)
+    ax.tick_params(axis="x", which="major", length=0 if chart_type == "bar" else 5)
+    ax.margins(y=0.14)
 
 
 def wrap_label(text, width=14):
@@ -322,11 +331,12 @@ def build_figure(data):
         "font.family": "sans-serif",
         "font.sans-serif": [font, "DejaVu Sans"],
         "mathtext.fontset": "dejavusans",
-        "font.size": 11,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 10,
+        # GOST chizma qoidasi: grafiklarda kattaroq shrift (rasm Word'ga 1:1, 6,2" kenglikda tushadi)
+        "font.size": 12,
+        "axes.labelsize": 12.5,
+        "xtick.labelsize": 11.5,
+        "ytick.labelsize": 11.5,
+        "legend.fontsize": 11,
         "figure.facecolor": "white",
         "axes.facecolor": "white",
         "savefig.facecolor": "white",
@@ -339,7 +349,8 @@ def build_figure(data):
     })
     diagram_type = data.get("diagram_type") or "simple"
     is_pie = diagram_type == "simple" and str(data.get("chartType") or "").lower() == "pie"
-    height = 3.4 if is_pie else 3.9
+    is_bar = str(data.get("chartType") or "").lower() == "bar"
+    height = 3.4 if is_pie else (3.4 if is_bar else 3.8)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         fig, ax = plt.subplots(figsize=(FIG_WIDTH_IN, height), constrained_layout=True)
@@ -353,6 +364,8 @@ def build_figure(data):
             raise ValueError(f"unsupported Matplotlib diagram type: {diagram_type}")
         if not is_pie:
             style_axes(ax)
+            if diagram_type != "mathematical_graph":
+                ax.tick_params(axis="x", which="minor", bottom=False)
             ax.yaxis.set_major_formatter(tick_formatter())
             if diagram_type == "mathematical_graph":
                 ax.xaxis.set_major_formatter(tick_formatter())

@@ -1,3 +1,4 @@
+const path = require("node:path");
 const { spawn } = require("node:child_process");
 const sharp = require("sharp");
 const { normalizeFlowchartData } = require("./flowchart-data");
@@ -187,7 +188,44 @@ function runGraphviz(dot, layoutEngine = "dot") {
   });
 }
 
+// GOST chizma qoidasi bo'yicha matplotlib renderer (ortogonal chiziqlar, T-tutashuv nuqtalari,
+// GOST 19.701 / GOST 2.721 belgilari, 1:1 masshtab). Ishlamasa — Graphviz zaxira.
+const GOST_SCHEMATIC_SCRIPT = path.join(__dirname, "gost-schematic.py");
+const SCHEMATIC_DPI = 300;
+let schematicFallbackReported = false;
+
+async function renderGostSchematic(input) {
+  const { runMatplotlib } = require("./matplotlib");
+  const template = getFlowchartTemplate(input?.template_id || input?.diagram_type);
+  const normalized = normalizeFlowchartData(input, { diagramType: template.id });
+  const buf = await runMatplotlib({ ...normalized, diagram_type: template.id }, GOST_SCHEMATIC_SCRIPT);
+  const metadata = await sharp(buf).metadata();
+  if (metadata.format !== "png" || !metadata.width || !metadata.height) {
+    throw new Error("flowchart: GOST sxema yaroqli PNG qaytarmadi");
+  }
+  // 1:1 masshtab: 300 dpi PNG → Word'da haqiqiy dyuym o'lchami (96 px/dyuym)
+  const width = metadata.width / SCHEMATIC_DPI * WORD_PIXELS_PER_INCH;
+  const height = metadata.height / SCHEMATIC_DPI * WORD_PIXELS_PER_INCH;
+  const fit = Math.min(1, 595 / width, 760 / height);
+  return { buf, width: Number((width * fit).toFixed(6)), height: Number((height * fit).toFixed(6)) };
+}
+
 async function renderFlowchart(input) {
+  if (process.env.SLIDEPRO_FLOWCHART_ENGINE !== "graphviz") {
+    try {
+      return await renderGostSchematic(input);
+    } catch (error) {
+      if (/flowchart: /.test(error.message) && !/GOST sxema|Matplotlib/i.test(error.message)) throw error;
+      if (!schematicFallbackReported) {
+        schematicFallbackReported = true;
+        console.warn(`[mustaqil] GOST sxema renderi ishlamadi, Graphviz zaxira ishlatiladi: ${error.message}`);
+      }
+    }
+  }
+  return renderGraphvizFlowchart(input);
+}
+
+async function renderGraphvizFlowchart(input) {
   const dot = buildFlowchartDot(input);
   const template = getFlowchartTemplate(input?.template_id || input?.diagram_type);
   const rawPng = await runGraphviz(dot, template.layoutEngine);
@@ -212,4 +250,4 @@ async function renderFlowchart(input) {
   };
 }
 
-module.exports = { buildFlowchartDot, renderFlowchart };
+module.exports = { buildFlowchartDot, renderFlowchart, renderGostSchematic, renderGraphvizFlowchart };
