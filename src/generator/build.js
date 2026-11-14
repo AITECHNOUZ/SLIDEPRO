@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const pptxgen = require("pptxgenjs");
 
-const { getPalette } = require("./theme");
+const { getPalette, getTheme, pickDesign } = require("./theme");
 const { generateAll, iconPath } = require("./icons");
 const { render } = require("./layouts");
 const { ensureStructure } = require("./structure");
@@ -23,9 +23,11 @@ async function ensureIcons(t) {
   await generateAll(ICONS_DIR, paletteColors(t));
 }
 
-function makeCtx(t) {
+function makeCtx(t, theme, deckTitle) {
   return {
     t,
+    theme,
+    deckTitle,
     icon: (name, color) => {
       const safeColor = (color || t.secondary).replace("#", "");
       const p = iconPath(ICONS_DIR, name, safeColor);
@@ -37,8 +39,11 @@ function makeCtx(t) {
 
 // spec -> .pptx faylga yozish
 async function buildPresentation(spec, outFile) {
-  const palName = spec.palette || "ocean";
-  const t = getPalette(palName);
+  // Dizayn: spec.theme/spec.palette berilsa — o'sha, aks holda tasodifiy mavzu va palitra
+  const design = pickDesign({ theme: spec.theme, palette: spec.palette });
+  spec.theme = design.themeKey;
+  spec.palette = design.paletteKey;
+  const t = design.palette;
   await ensureIcons(t);
 
   const pres = new pptxgen();
@@ -46,7 +51,8 @@ async function buildPresentation(spec, outFile) {
   pres.author = "Taqdimot Bot";
   pres.title = (spec.slides && spec.slides[0] && spec.slides[0].title) || "Taqdimot";
 
-  const ctx = makeCtx(t);
+  const deckTitle = (spec.slides && spec.slides[0] && spec.slides[0].title) || spec.title || "";
+  const ctx = makeCtx(t, design.theme, String(deckTitle).replace(/\s+/g, " "));
   spec.slides.forEach((sd, i) => {
     sd.number = i + 1;
     const slide = pres.addSlide();
@@ -58,7 +64,7 @@ async function buildPresentation(spec, outFile) {
 }
 
 // mavzu (+ ixtiyoriy kontent) -> 2 bosqichli LLM -> spec -> .pptx
-async function generatePresentation({ topic, slides, sourceContent, palette, language, studentName, studentGroup, university, faculty, department, supervisor, llm, outFile }) {
+async function generatePresentation({ topic, slides, sourceContent, palette, theme, language, studentName, studentGroup, university, faculty, department, supervisor, llm, outFile }) {
   const L = labels(language);
   const { spec, usedProvider } = await generateSpecParallel({ topic, slides, sourceContent, language, llm: llm || {} });
 
@@ -74,7 +80,9 @@ async function generatePresentation({ topic, slides, sourceContent, palette, lan
 
   // Tuzilma kafolati: titul + reja + ... + xulosa + adabiyotlar
   ensureStructure(spec, topic, { language });
-  if (palette) spec.palette = palette;
+  // LLM tanlagan palitra emas — dizayn mavzusi tasodifiy (yoki admin/foydalanuvchi tanlovi)
+  spec.theme = theme || undefined;
+  spec.palette = palette || undefined;
 
   // Titul: universitet, fakultet/kafedra, talaba va tekshiruvchi — foydalanuvchi kiritganidan
   const titleSlide = spec.slides.find((s) => s.layout === "title");
@@ -92,7 +100,7 @@ async function generatePresentation({ topic, slides, sourceContent, palette, lan
   }
 
   await buildPresentation(spec, outFile);
-  return { outFile, slideCount: spec.slides.length, palette: spec.palette || "ocean", usedProvider };
+  return { outFile, slideCount: spec.slides.length, theme: spec.theme, palette: spec.palette, usedProvider };
 }
 
 module.exports = { buildPresentation, generatePresentation, ensureIcons, ICONS_DIR };
