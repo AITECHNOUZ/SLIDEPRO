@@ -159,6 +159,13 @@ function mediaResponse(userPrompt, attempts) {
       edges: selected.edges.map(([from, to, label = ""]) => ({ from, to, label })),
     };
   }
+  if (slotId.includes(":table:")) {
+    return {
+      slot_id: slotId, type: "table", title: "Rostlash usullarini taqqoslash", caption: "Rostlash usullarini taqqoslash",
+      headers: ["Usul", "Aniqlik", "Qo'llanishi"],
+      rows: [["P", "Past", "Oddiy obyektlar"], ["PI", "O'rta", "Sarf va bosim"], ["PID", "Yuqori", "Harorat"]],
+    };
+  }
   throw new Error(`Kutilmagan slot: ${slotId}`);
 }
 
@@ -250,14 +257,16 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
     assert.doesNotMatch(bibliographyRetries[0], /Nazariy asoslar|Amaliy tahlil/, "retry boblar mazmunini qayta yaratishni so'ramaydi");
     assert.equal(requests.filter(prompt => prompt.includes("MEDIA AJRATISH QOIDASI")).length, 6, "6 ta bobning prose so'rovlari media payloadini generatsiya qilmaydi");
     const slotRequests = requests.filter(prompt => prompt.includes("Slot ID:"));
-    assert.equal(slotRequests.length, 7, "6 ta media sloti va faqat bitta yaroqsiz formula slotiga qo'shimcha urinish bo'ladi");
+    const uniqueSlots = new Set(slotRequests.map(prompt => prompt.match(/Slot ID: (\S+?)\./)[1]));
+    assert.equal(slotRequests.length, uniqueSlots.size + 1, "har media slotiga bitta so'rov va faqat bitta yaroqsiz formula slotiga qo'shimcha urinish");
+    assert.ok([...uniqueSlots].some(id => /:table:/.test(id)), "har ishda kamida bitta taqqoslash jadvali rejalashtiriladi");
     assert.ok(slotRequests.every(prompt => /status yorlig'i qo'shma|status yorliqlarini ishlatma/i.test(prompt)), "media promptlari captionlarda status/disclosure yorlig'ini taqiqlasin");
     const flowchartRequests = slotRequests.filter(prompt => prompt.includes('"type":"flowchart"'));
     assert.equal(flowchartRequests.length, 2, "har bir rejalashtirilgan Graphviz sloti alohida prompt oladi");
     const selectedTypes = flowchartRequests.map(prompt => prompt.match(/Tanlangan va o‘zgarmas diagram_type: ([A-Za-z0-9_]+)/)?.[1]);
     assert.ok(selectedTypes.every(type => ["functional_block_diagram", "algorithm_flowchart", "pid_control_system", "uml_software_architecture", "process_sequence"].includes(type)), "har bir Graphviz promptida mavzuga mos semantic diagram_type ko'rsatiladi");
     assert.ok(flowchartRequests.every(prompt => /Avtomatik boshqaruv tizimlari/.test(prompt) && /bob|Reja:/i.test(prompt)), "Graphviz so'rovlari hujjat mavzusi va bob rejasi bilan boyitiladi");
-    assert.equal(new Set(slotRequests.map(prompt => prompt.match(/Slot ID: ([^\s.]+)/)?.[1])).size, 6);
+    assert.equal(new Set(slotRequests.map(prompt => prompt.match(/Slot ID: ([^\s.]+)/)?.[1])).size, 7, "6 ta media + 1 taqqoslash jadvali");
     assert.equal(mediaAttempts.get("ch1:formula:1"), 2, "yaroqsiz LaTeX rejaga mos kelmagani uchun aynan shu slot qayta olinadi");
     assert.equal(mediaAttempts.get("ch2:formula:1"), 1, "ikkinchi yaroqli formula sloti qayta so'ralmaydi");
     assert.ok([...mediaAttempts].filter(([slotId]) => !slotId.includes(":formula:")).every(([, count]) => count === 1));

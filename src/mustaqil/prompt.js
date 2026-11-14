@@ -282,7 +282,14 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     });
   }
   const usedMainTitles = new Set();
-  let tableSlotAvailable = true;
+  // Jadvallar: har ishda kamida 1 ta taqqoslash jadvali (20+ betda 2 ta). LLM jadval so'ragan
+  // boblar ustuvor, qolgani — eng kam media tushgan (odatda amaliy/taqqoslov) bobga.
+  const tableQuota = mainChapters.length ? (plan.requestedPages >= 20 ? 2 : 1) : 0;
+  const mediaLoad = index => (formulaAssignments.get(index) || []).length
+    + (chartAssignments.get(index) || []).length + (flowchartLists.get(index) || []).length;
+  const tableOrder = mainChapters.map((chapter, index) => ({ index, asked: Number(chapter.table_count) > 0 }))
+    .sort((a, b) => (Number(b.asked) - Number(a.asked)) || (mediaLoad(a.index) - mediaLoad(b.index)) || (b.index - a.index));
+  const tableChapters = new Set(tableOrder.slice(0, Math.min(tableQuota, mainChapters.length)).map(item => item.index));
 
   const intro = {
     ...introSource,
@@ -301,8 +308,11 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     const chartCount = assignedCharts.length;
     const flowchartPlans = flowchartLists.get(index) || [];
     const flowchartCount = flowchartPlans.length;
-    const tableCount = tableSlotAvailable && Number(chapter.table_count) > 0 ? 1 : 0;
-    if (tableCount) tableSlotAvailable = false;
+    const tableCount = tableChapters.has(index) ? 1 : 0;
+    const tablePlans = tableCount
+      ? [(Array.isArray(chapter.table_plans) && chapter.table_plans.find(plan => plan && plan.title))
+        || { title: `${chapter.title || fallbackMainTitle(topic, index)}: taqqoslash jadvali`, purpose: "asosiy usullar/turlar/ko'rsatkichlarni mezonlar bo'yicha taqqoslash" }]
+      : [];
     const sections = Array.from({ length: desiredCount }, (_, sectionIndex) => {
       const fallback = `${mainTitle}: ${SECTION_ASPECTS[sectionIndex % SECTION_ASPECTS.length]} (${sectionIndex + 1})`;
       const title = uniquePlanTitle(existingSections[sectionIndex]?.title, usedTitles, fallback);
@@ -330,6 +340,7 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
       flowchart_count: flowchartCount,
       flowchart_plans: flowchartPlans,
       table_count: tableCount,
+      table_plans: tablePlans,
       word_target: desiredCount * plan.sectionWordTarget,
     };
   });

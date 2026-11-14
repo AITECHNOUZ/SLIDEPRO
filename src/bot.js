@@ -61,6 +61,14 @@ function contentInline() {
     .text("📎 Kontent yuklayman","content:yes").row()
     .text("🤖 AI o'zi yozsin","content:no");
 }
+function tocInline() {
+  return new InlineKeyboard()
+    .text("📑 Ha, mundarija kerak","toc:yes").row()
+    .text("📄 Yo'q, faqat reja","toc:no");
+}
+function skipInline(field) {
+  return new InlineKeyboard().text("⏭ O'tkazib yuborish","skip:"+field);
+}
 function formulaInline() {
   return new InlineKeyboard()
     .text("✅ Ha, kerak","formula:yes").text("❌ Yo'q","formula:no");
@@ -364,9 +372,58 @@ async function askContent(ctx) {
 async function continueWithoutStudentDetails(ctx) {
   ctx.session.draft.studentName = "";
   ctx.session.draft.studentGroup = "";
+  return afterStudentDetails(ctx);
+}
+// ── TITUL MA'LUMOTLARI (mustaqil ish, VIP/admin'dan so'ralmaydi) ──
+const TITLE_FIELDS = [
+  { key: "university", step: "await_university", ask: "🏛 Universitet nomini kiriting:\n\n<i>Masalan: Qarshi davlat texnika universiteti</i>" },
+  { key: "faculty", step: "await_faculty", ask: "🏢 Fakultet nomini kiriting:\n\n<i>Masalan: Energetika</i>" },
+  { key: "department", step: "await_department", ask: "📚 Kafedra nomini kiriting:\n\n<i>Masalan: Texnologik jarayonlarni avtomatlashtirish</i>" },
+  { key: "supervisor", step: "await_supervisor", ask: "👨‍🏫 Tekshiruvchi (o'qituvchi) F.I.Sh.:\n\n<i>Masalan: Karimov A.B.</i>" },
+];
+async function askTitleField(ctx, index) {
+  const field = TITLE_FIELDS[index];
+  if (!field) return askToc(ctx);
+  ctx.session.step = field.step;
+  return ctx.reply(field.ask, { parse_mode:"HTML", reply_markup: skipInline(field.key) });
+}
+async function nextTitleField(ctx, currentKey) {
+  const index = TITLE_FIELDS.findIndex(field => field.key === currentKey);
+  return askTitleField(ctx, index + 1);
+}
+// Mundarija — barcha foydalanuvchilardan (VIP ham) so'raladi
+async function askToc(ctx) {
+  ctx.session.step = "await_toc";
+  return ctx.reply("📑 Mustaqil ishga sahifa raqamli <b>mundarija</b> qo'shilsinmi?\n\n<i>Yo'q desangiz, 2-sahifada qisqa reja bo'ladi.</i>", { parse_mode:"HTML", reply_markup: tocInline() });
+}
+// Talaba ma'lumotlaridan keyingi qadam: mustaqil ish → titul/mundarija, taqdimot → kontent
+async function afterStudentDetails(ctx) {
+  if (ctx.session.draft.workType !== "mustaqil") {
+    ctx.session.step = "await_content_choice";
+    return askContent(ctx);
+  }
+  if (needsStudentDetails(ctx.from.id)) return askTitleField(ctx, 0);
+  return askToc(ctx);
+}
+
+bot.callbackQuery(/^skip:(university|faculty|department|supervisor)$/, async (ctx) => {
+  const field = TITLE_FIELDS.find(item => item.key === ctx.match[1]);
+  if (!field || ctx.session.step !== field.step) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  ctx.session.draft[field.key] = "";
+  try { await ctx.editMessageReplyMarkup({ reply_markup: undefined }); } catch (_) {}
+  return nextTitleField(ctx, field.key);
+});
+
+bot.callbackQuery(/^toc:(yes|no)$/, async (ctx) => {
+  if (ctx.session.step !== "await_toc") return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  ctx.session.draft.includeToc = ctx.match[1] === "yes";
+  await ctx.editMessageText(ctx.session.draft.includeToc ? "✅ Mundarija qo'shiladi" : "✅ Mundarija o'rniga reja");
   ctx.session.step = "await_content_choice";
   return askContent(ctx);
-}
+});
+
 async function askStudentDetailsOrContinue(ctx) {
   if (!needsStudentDetails(ctx.from.id)) return continueWithoutStudentDetails(ctx);
   ctx.session.step = "await_student_name";
@@ -420,9 +477,15 @@ bot.on("message:text", async (ctx) => {
   if (step === "await_student_group") {
     if (!needsStudentDetails(ctx.from.id)) return continueWithoutStudentDetails(ctx);
     ctx.session.draft.studentGroup = text;
-    ctx.session.step = "await_content_choice";
     await ctx.reply("✅ "+esc(ctx.session.draft.studentName)+" — "+esc(text));
-    return askContent(ctx);
+    return afterStudentDetails(ctx);
+  }
+
+  const titleField = TITLE_FIELDS.find(field => field.step === step);
+  if (titleField) {
+    if (text.length < 2 || text.length > 120) return ctx.reply("Iltimos, to'g'ri nom kiriting (2–120 belgi) yoki «O'tkazib yuborish» tugmasini bosing.");
+    ctx.session.draft[titleField.key] = text;
+    return nextTitleField(ctx, titleField.key);
   }
 
   if (step === "await_content_upload") {
@@ -509,6 +572,8 @@ async function proceedToPayment(ctx) {
       topic: d.topic, slides: d.slides, pages: d.pages,
       student_name: d.studentName||"", student_group: d.studentGroup||"",
       language: d.language||"o'zbek",
+      university: d.university||"", faculty: d.faculty||"", department: d.department||"",
+      supervisor: d.supervisor||"", include_toc: d.includeToc ? 1 : 0,
       has_content: d.has_content, content_text: d.content_text,
       amount: 0, currency: currency(), status: "paid", payment_method: "free",
     });
@@ -532,6 +597,8 @@ async function proceedToPayment(ctx) {
     "📌 Mavzu: "+esc(d.topic)+"\n"+
     (isMustaqil ? "📄 Sahifalar: "+(d.pages||15)+" ta (Word .docx)\n" : "🎨 Slaydlar: "+(d.slides||10)+" ta (PowerPoint)\n")+
     "👤 "+esc(d.studentName||"—")+" — "+esc(d.studentGroup||"—")+"\n"+
+    (isMustaqil && d.university ? "🏛 "+esc(d.university)+"\n" : "")+
+    (isMustaqil ? "📑 "+(d.includeToc ? "Mundarija bilan" : "Reja bilan")+"\n" : "")+
     "📎 Kontent: "+(d.has_content ? "yuklangan" : "AI yaratadi")+"\n\n"+
     "💰 <b>Narx: "+formatAmount(amount)+" "+currency()+"</b>\n\nTo'lov usuli:",
     { parse_mode:"HTML", reply_markup: methods }
@@ -547,6 +614,8 @@ bot.callbackQuery(/^pay:(manual|click|payme)$/, async (ctx) => {
     topic: d.topic, slides: d.slides, pages: d.pages,
     student_name: d.studentName||"", student_group: d.studentGroup||"",
     language: d.language||"o'zbek",
+    university: d.university||"", faculty: d.faculty||"", department: d.department||"",
+    supervisor: d.supervisor||"", include_toc: d.includeToc ? 1 : 0,
     has_content: d.has_content, content_text: d.content_text,
     amount: d.amount, currency: currency(), status: "awaiting_payment", payment_method: method,
   });

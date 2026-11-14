@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS cache (
 // eski bazaga yangi ustunlar qo'shish (migratsiya)
 const migrate = (col, def="TEXT") => { try { db.prepare("SELECT "+col+" FROM orders LIMIT 1").get(); } catch(e) { try { db.exec("ALTER TABLE orders ADD COLUMN "+col+" "+def); } catch(_) {} } };
 migrate("file_id"); migrate("work_type"); migrate("pages","INTEGER"); migrate("student_name"); migrate("student_group"); migrate("language");
+migrate("university"); migrate("faculty"); migrate("department"); migrate("supervisor"); migrate("include_toc","INTEGER");
 
 
 // ---- settings ----
@@ -105,14 +106,18 @@ function upsertUser(tgId, username, firstName) {
 function createOrder(o) {
   const info = db.prepare(`INSERT INTO orders
     (user_tg_id,work_type,topic,slides,pages,student_name,student_group,language,
+     university,faculty,department,supervisor,include_toc,
      has_content,content_text,amount,currency,status,payment_method,created_at)
     VALUES(@user_tg_id,@work_type,@topic,@slides,@pages,@student_name,@student_group,@language,
+           @university,@faculty,@department,@supervisor,@include_toc,
            @has_content,@content_text,@amount,@currency,@status,@payment_method,@created_at)`)
     .run({
       user_tg_id: o.user_tg_id, work_type: o.work_type||"taqdimot",
       topic: o.topic, slides: o.slides||null, pages: o.pages||null,
       student_name: o.student_name||null, student_group: o.student_group||null,
       language: o.language||null,
+      university: o.university||null, faculty: o.faculty||null, department: o.department||null,
+      supervisor: o.supervisor||null, include_toc: o.include_toc ? 1 : 0,
       has_content: o.has_content ? 1 : 0, content_text: o.content_text || null,
       amount: o.amount, currency: o.currency, status: o.status || "draft",
       payment_method: o.payment_method || null, created_at: Date.now(),

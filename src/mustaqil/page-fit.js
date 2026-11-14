@@ -239,6 +239,28 @@ function sectionGroups(content) {
   return groups;
 }
 
+/**
+ * Mundarija: har bir sarlavha qaysi betda (chop etilgan raqam = PDF beti tartibi + 1 emas,
+ * balki 1 dan boshlangan fizik raqam — muqova 1-bet hisoblanadi). Qidiruv MUNDARIJA
+ * sahifasidan keyin boshlanadi va tartib bo'yicha davom etadi.
+ */
+function findEntryPages(pages, entries) {
+  const keys = pages.map(page => normalize(page));
+  let cursor = keys.findIndex(page => page.includes("MUNDARIJA"));
+  cursor = cursor >= 0 ? cursor + 1 : 1;
+  return entries.map(entry => {
+    const key = normalize(entry.search || entry.text).slice(0, 36);
+    if (!key) return null;
+    for (let index = cursor; index < pages.length; index++) {
+      if (keys[index].includes(key)) {
+        cursor = index;
+        return index + 1;
+      }
+    }
+    return null;
+  });
+}
+
 function insertParagraphsAfter(content, endIndex, paragraphs) {
   const blocks = Array.isArray(content) ? [...content] : [];
   const additions = (paragraphs || [])
@@ -259,5 +281,6 @@ module.exports = {
   shrinkChapterContent,
   sectionGroups,
   insertParagraphsAfter,
+  findEntryPages,
   officeCommand,
 };

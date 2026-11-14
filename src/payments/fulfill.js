@@ -29,7 +29,13 @@ function cacheKey(order) {
     : "ai";
   const wt = order.work_type || "taqdimot";
   const count = wt === "mustaqil" ? (order.pages || "?") : (order.slides || "?");
-  return `${wt}|${norm}|${count}|${contentHash}`;
+  // Titul (ism, guruh, universitet...), til va mundarija farq qilsa — boshqa hujjat:
+  // aks holda boshqa talabaga birovning ismi yozilgan fayl yuborilib qolardi.
+  const personal = [order.student_name, order.student_group, order.university, order.faculty,
+    order.department, order.supervisor, order.language, order.include_toc ? "toc" : "reja"]
+    .map(value => String(value || "").trim().toLowerCase()).join("|");
+  const personalHash = crypto.createHash("md5").update(personal).digest("hex").slice(0, 8);
+  return `${wt}|${norm}|${count}|${contentHash}|${personalHash}`;
 }
 
 async function fulfillOrder(orderId) {
@@ -74,8 +80,10 @@ async function fulfillOrder(orderId) {
     let res;
     if (isMustaqil) {
       res = await generateMustaqilIsh({ topic: order.topic, pages: order.pages || 15,
-        language: "o\'zbek", studentName: order.student_name || "", studentGroup: order.student_group || "",
-        org: "", supervisor: "", sourceContent: order.content_text || "", llm: llmCfg, outFile,
+        language: order.language || "o\'zbek", studentName: order.student_name || "", studentGroup: order.student_group || "",
+        org: "", supervisor: order.supervisor || "", university: order.university || "",
+        faculty: order.faculty || "", department: order.department || "", includeToc: Boolean(order.include_toc),
+        sourceContent: order.content_text || "", llm: llmCfg, outFile,
         onProgress: ({ percent, phase }) => progress?.update(percent, phase) });
       res.slideCount = order.pages || 15;
     } else {
