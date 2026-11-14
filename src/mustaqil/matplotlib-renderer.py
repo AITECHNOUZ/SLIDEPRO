@@ -325,6 +325,209 @@ def plot_simple(data, ax):
     finish_legend(ax, 1, force=isinstance(data.get("threshold"), dict))
 
 
+# ── Qo'shimcha grafik turlari ────────────────────────────
+def fit_trend(xs, ys, kind):
+    """Trend chizig'i: (x_line, y_line, tenglama matni, R²)."""
+    x_line = np.linspace(xs.min(), xs.max(), 200)
+    if kind == "quadratic" and len(xs) >= 4:
+        coeffs = np.polyfit(xs, ys, 2)
+        predicted = np.polyval(coeffs, xs)
+        y_line = np.polyval(coeffs, x_line)
+        a, b, c = coeffs
+        equation = f"$y = {fmt_coef(a)}x^2 {signed(b)}x {signed(c)}$"
+    elif kind == "exponential":
+        b, ln_a = np.polyfit(xs, np.log(ys), 1)
+        a = math.exp(ln_a)
+        predicted = a * np.exp(b * xs)
+        y_line = a * np.exp(b * x_line)
+        equation = f"$y = {fmt_coef(a)}\\,e^{{{fmt_coef(b)}x}}$"
+    else:
+        k, b = np.polyfit(xs, ys, 1)
+        predicted = k * xs + b
+        y_line = k * x_line + b
+        equation = f"$y = {fmt_coef(k)}x {signed(b)}$"
+    ss_res = float(np.sum((ys - predicted) ** 2))
+    ss_tot = float(np.sum((ys - ys.mean()) ** 2))
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    return x_line, y_line, equation, r2
+
+
+def fmt_coef(value):
+    """3 ta ma'noli raqam, eksponentasiz, vergul bilan."""
+    magnitude = abs(value)
+    if magnitude == 0:
+        return "0"
+    decimals = int(min(6, max(0, 2 - math.floor(math.log10(magnitude)))))
+    return comma_number(round(value, decimals), decimals).replace(",", "{,}")
+
+
+def signed(value):
+    return ("- " if value < 0 else "+ ") + fmt_coef(abs(value))
+
+
+def plot_scatter_trend(data, ax):
+    points = np.asarray(data.get("points"), dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or not 5 <= len(points) <= 40 or not np.isfinite(points).all():
+        raise ValueError("scatter_trend requires 5–40 finite [x, y] points")
+    xs, ys = points[:, 0], points[:, 1]
+    ax.scatter(xs, ys, s=38, facecolor="white", edgecolor=BLUE_DARK, linewidth=1.5, zorder=4,
+               label=str(data.get("series_name") or "Tajriba nuqtalari"))
+    x_line, y_line, equation, r2 = fit_trend(xs, ys, str(data.get("fit") or "linear"))
+    ax.plot(x_line, y_line, color=BLACK, linewidth=1.8, linestyle="--", zorder=3,
+            label=f"{equation},  $R^2 = {comma_number(r2, 3).replace(',', '{,}')}$")
+    ax.set_xlabel(axis_label(data.get("x_label") or "x", data.get("x_unit")))
+    ax.set_ylabel(axis_label(data.get("y_label") or "y", data.get("unit")))
+    draw_threshold(ax, data)
+    ax.legend(frameon=False, loc="best")
+
+
+def plot_stacked_bar(data, ax):
+    labels = data.get("labels")
+    series = data.get("series")
+    if not isinstance(labels, list) or not 2 <= len(labels) <= 8 or not isinstance(series, list) or not 2 <= len(series) <= 5:
+        raise ValueError("stacked_bar requires 2–8 labels and 2–5 series")
+    x = np.arange(len(labels), dtype=float)
+    bottom = np.zeros(len(labels))
+    for index, item in enumerate(series):
+        values = np.asarray(item.get("values"), dtype=float)
+        if values.shape != x.shape or not np.isfinite(values).all() or (values < 0).any():
+            raise ValueError("stacked series must match labels and be non-negative")
+        style = BAR_STYLES[index % len(BAR_STYLES)]
+        ax.bar(x, values, bottom=bottom, width=0.58, linewidth=1.1, label=str(item.get("name") or f"Seriya {index + 1}"),
+               facecolor=style["facecolor"], edgecolor=style["edgecolor"] if style["edgecolor"] != BLUE_DARK else BLACK,
+               hatch=style["hatch"], zorder=3)
+        # Bo'lak qiymati — ichida (yetarli balandlikda bo'lsa)
+        dark = style["facecolor"] in (BLUE_DARK, "#7fa8d1")
+        for xi, base, value in zip(x, bottom, values):
+            if value > 0.07 * max(1e-9, float(np.max(values)) * len(series)):
+                ax.text(xi, base + value / 2, comma_number(value), ha="center", va="center", fontsize=10.5,
+                        color="white" if dark else BLACK, zorder=5,
+                        bbox=None if not style["hatch"] else dict(facecolor="white", edgecolor="none", pad=1.2))
+        bottom = bottom + values
+    if bottom.max() - bottom.min() > 1e-6 * max(1.0, bottom.max()):
+        for xi, total in zip(x, bottom):
+            ax.annotate(comma_number(total), (xi, total), textcoords="offset points", xytext=(0, 3), ha="center",
+                        va="bottom", fontsize=11, color=BLACK, weight="bold")
+    ax.set_xticks(x, [wrap_label(str(label)) for label in labels])
+    ax.tick_params(axis="x", which="both", length=0)
+    ax.set_ylim(0, bottom.max() * 1.16)
+    if data.get("x_label"):
+        ax.set_xlabel(str(data["x_label"]))
+    ax.set_ylabel(axis_label(data.get("y_label") or "", data.get("unit")))
+    draw_threshold(ax, data)
+    ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.16 if any("\n" in wrap_label(str(l)) for l in labels) else -0.1),
+              ncol=min(len(series), 3))
+
+
+def plot_horizontal_bar(data, ax):
+    labels = data.get("labels")
+    values = data.get("values")
+    if not isinstance(labels, list) or not isinstance(values, list) or len(labels) != len(values) or not 3 <= len(labels) <= 10:
+        raise ValueError("horizontal_bar requires 3–10 labels with values")
+    numbers = np.asarray(values, dtype=float)
+    if not np.isfinite(numbers).all():
+        raise ValueError("values must be finite")
+    order = np.argsort(numbers)  # eng kattasi tepada
+    numbers = numbers[order]
+    names = [wrap_label(str(labels[i]), 22) for i in order]
+    y = np.arange(len(names), dtype=float)
+    bars = ax.barh(y, numbers, height=0.6, facecolor=BLUE_LIGHT, edgecolor=BLUE_DARK, linewidth=1.2, zorder=3)
+    bars[-1].set_facecolor(BLUE_DARK)
+    span = max(abs(numbers).max(), 1e-9)
+    for rect, value in zip(bars, numbers):
+        ax.annotate(comma_number(value), (value, rect.get_y() + rect.get_height() / 2), textcoords="offset points",
+                    xytext=(4 if value >= 0 else -4, 0), ha="left" if value >= 0 else "right", va="center", fontsize=11,
+                    zorder=6, bbox=dict(facecolor="white", edgecolor="none", pad=0.8))
+    ax.set_yticks(y, names)
+    ax.tick_params(axis="y", which="both", length=0)
+    ax.set_xlim(min(0, numbers.min() * 1.15), max(0, numbers.max()) + span * 0.15)
+    ax.axvline(0, color=BLACK, linewidth=1.0, zorder=4)
+    ax.set_xlabel(axis_label(data.get("x_label") or data.get("y_label") or "", data.get("unit")))
+    threshold = data.get("threshold")
+    if isinstance(threshold, dict):
+        try:
+            value = float(threshold.get("value"))
+            ax.axvline(value, color=RED, linestyle="--", linewidth=1.3,
+                       label=f"{threshold.get('label') or 'Chegara'}: {comma_number(value)}", zorder=4)
+            ax.legend(frameon=False, loc="lower right")
+        except (TypeError, ValueError):
+            pass
+
+
+def plot_dual_axis(data, ax):
+    labels = data.get("labels")
+    left = data.get("left") or {}
+    right = data.get("right") or {}
+    if not isinstance(labels, list) or not 3 <= len(labels) <= 10:
+        raise ValueError("dual_axis requires 3–10 labels")
+    x = np.arange(len(labels), dtype=float)
+    lv = np.asarray(left.get("values"), dtype=float)
+    rv = np.asarray(right.get("values"), dtype=float)
+    if lv.shape != x.shape or rv.shape != x.shape or not np.isfinite(lv).all() or not np.isfinite(rv).all():
+        raise ValueError("dual_axis series must match labels")
+    bars = ax.bar(x, lv, width=0.55, facecolor=BLUE_LIGHT, edgecolor=BLUE_DARK, linewidth=1.2, zorder=3,
+                  label=str(left.get("name")))
+    ax.set_ylabel(axis_label(left.get("name"), left.get("unit")))
+    ax.set_xticks(x, [wrap_label(str(label)) for label in labels])
+    ax.tick_params(axis="x", which="both", length=0)
+    ax.set_ylim(0 if lv.min() >= 0 else lv.min() * 1.2, lv.max() * 1.2 if lv.max() > 0 else 1)
+    if data.get("x_label"):
+        ax.set_xlabel(str(data["x_label"]))
+    twin = ax.twinx()
+    line = twin.plot(x, rv, color=BLACK, linewidth=2.2, marker="o", markersize=6.5, markerfacecolor="white",
+                     markeredgewidth=1.4, zorder=5, label=str(right.get("name")))
+    twin.set_ylabel(axis_label(right.get("name"), right.get("unit")))
+    span = rv.max() - rv.min() or abs(rv.max()) or 1
+    twin.set_ylim(rv.min() - span * 0.35, rv.max() + span * 0.25)
+    for side in ("top",):
+        twin.spines[side].set_visible(False)
+    twin.spines["right"].set_color(BLACK)
+    twin.spines["right"].set_linewidth(1.3)
+    twin.spines["left"].set_visible(False)
+    twin.tick_params(colors=BLACK, width=1.1, length=5, direction="in")
+    twin.yaxis.set_major_formatter(tick_formatter())
+    ax.legend([bars, line[0]], [str(left.get("name")), str(right.get("name"))], frameon=False,
+              loc="upper center", bbox_to_anchor=(0.5, 1.13), ncol=2)
+    data["_dual"] = True
+
+
+def plot_histogram(data, ax):
+    edges = np.asarray(data.get("bin_edges"), dtype=float)
+    counts = np.asarray(data.get("counts"), dtype=float)
+    if counts.ndim != 1 or not 4 <= len(counts) <= 12 or edges.shape != (len(counts) + 1,):
+        raise ValueError("histogram requires 4–12 counts and matching bin edges")
+    if not np.isfinite(edges).all() or not np.isfinite(counts).all() or (np.diff(edges) <= 0).any() or (counts < 0).any():
+        raise ValueError("invalid histogram bins")
+    widths = np.diff(edges)
+    ax.bar(edges[:-1], counts, width=widths, align="edge", facecolor=BLUE_LIGHT, edgecolor=BLUE_DARK, linewidth=1.2,
+           zorder=3, label=str(data.get("series_name") or "Chastota"))
+    centers = (edges[:-1] + edges[1:]) / 2
+    total = counts.sum()
+    mean = float((centers * counts).sum() / total)
+    std = float(math.sqrt(((centers - mean) ** 2 * counts).sum() / total))
+    if data.get("show_normal", True) and std > 0:
+        xs = np.linspace(edges[0], edges[-1], 300)
+        density = np.exp(-0.5 * ((xs - mean) / std) ** 2) / (std * math.sqrt(2 * math.pi))
+        ax.plot(xs, density * total * widths.mean(), color=BLACK, linewidth=1.8, linestyle="--", zorder=4,
+                label=f"Normal taqsimot ($\\bar{{x}} = {comma_number(mean, 2).replace(',', '{,}')}$, "
+                      f"$\\sigma = {comma_number(std, 2).replace(',', '{,}')}$)")
+    ax.set_xticks(edges)
+    ax.set_xlabel(axis_label(data.get("x_label") or "x", data.get("unit")))
+    ax.set_ylabel(str(data.get("y_label") or "Chastota"))
+    ax.set_ylim(0, counts.max() * 1.18)
+    draw_threshold(ax, data)
+    ax.legend(frameon=False, loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=2)
+
+
+EXTRA_PLOTTERS = {
+    "scatter_trend": plot_scatter_trend,
+    "stacked_bar": plot_stacked_bar,
+    "horizontal_bar": plot_horizontal_bar,
+    "dual_axis": plot_dual_axis,
+    "histogram": plot_histogram,
+}
+
+
 def build_figure(data):
     font = choose_font()
     matplotlib.rcParams.update({
@@ -351,6 +554,8 @@ def build_figure(data):
     is_pie = diagram_type == "simple" and str(data.get("chartType") or "").lower() == "pie"
     is_bar = str(data.get("chartType") or "").lower() == "bar"
     height = 3.4 if is_pie else (3.4 if is_bar else 3.8)
+    if diagram_type == "horizontal_bar":
+        height = max(2.6, 0.42 * len(data.get("labels") or []) + 1.0)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         fig, ax = plt.subplots(figsize=(FIG_WIDTH_IN, height), constrained_layout=True)
@@ -360,13 +565,28 @@ def build_figure(data):
             plot_experiment_results(data, ax)
         elif diagram_type == "simple":
             plot_simple(data, ax)
+        elif diagram_type in EXTRA_PLOTTERS:
+            EXTRA_PLOTTERS[diagram_type](data, ax)
         else:
             raise ValueError(f"unsupported Matplotlib diagram type: {diagram_type}")
         if not is_pie:
             style_axes(ax)
-            if diagram_type != "mathematical_graph":
+            if diagram_type not in ("mathematical_graph", "scatter_trend", "histogram", "horizontal_bar"):
                 ax.tick_params(axis="x", which="minor", bottom=False)
-            ax.yaxis.set_major_formatter(tick_formatter())
+            if diagram_type in ("horizontal_bar",):
+                ax.tick_params(axis="y", which="minor", left=False)
+                ax.grid(False, axis="y")
+                ax.xaxis.set_major_formatter(tick_formatter())
+            if diagram_type in ("scatter_trend", "histogram"):
+                ax.xaxis.set_major_formatter(tick_formatter())
+            if diagram_type in ("stacked_bar", "dual_axis", "histogram"):
+                ax.grid(False, axis="x")
+            if diagram_type == "dual_axis":
+                ax.spines["right"].set_visible(True)
+                ax.spines["right"].set_color(BLACK)
+                ax.spines["right"].set_linewidth(1.3)
+            if diagram_type != "horizontal_bar":
+                ax.yaxis.set_major_formatter(tick_formatter())
             if diagram_type == "mathematical_graph":
                 ax.xaxis.set_major_formatter(tick_formatter())
     return fig, ax

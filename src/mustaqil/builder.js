@@ -226,6 +226,7 @@ function heading1(text, opts = {}) {
     children: [new TextRun({ text: stripBob(text).toUpperCase(), font: FONT, size: FONT_SIZE, bold: true, color: BLACK })],
     pageBreakBefore: opts.pageBreakBefore || undefined,
     outlineLevel: 0, // Word navigatsiya paneli va mundarija maydoni uchun
+    keepNext: true,
     spacing: { ...LINE_SPACING, before: mm(4), after: mm(2) },
     alignment: AlignmentType.CENTER,
     indent: undefined,
@@ -236,14 +237,16 @@ function heading2(text) {
   return new Paragraph({
     children: [new TextRun({ text: stripBob(text), font: FONT, size: FONT_SIZE, bold: true, color: BLACK })],
     outlineLevel: 1,
+    keepNext: true, // sarlavha sahifa oxirida yolg'iz qolmasin
     spacing: { ...LINE_SPACING, before: mm(3), after: mm(2) },
     alignment: AlignmentType.LEFT,
     indent: { firstLine: INDENT },
   });
 }
 
-function captionPara(text) {
+function captionPara(text, { keepNext = false } = {}) {
   return new Paragraph({
+    keepNext: keepNext || undefined,
     children: [new TextRun({ text, font: FONT, size: SMALL_SIZE, italics: true, color: BLACK })],
     spacing: { line: 240, before: mm(1), after: mm(2) },
     keepLines: true,
@@ -328,7 +331,7 @@ function tableBlock(data, caption) {
   if (headers.length === 0 && rows.length === 0) return [];
   const nodes = [];
   const finalCaption = cleanMediaText(caption);
-  if (finalCaption) nodes.push(captionPara(finalCaption));
+  if (finalCaption) nodes.push(captionPara(finalCaption, { keepNext: true }));
   const headerRow = new TableRow({
     tableHeader: true,
     children: headers.map((h) => new TableCell({
@@ -627,7 +630,8 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
       }
       case "flowchart": {
         const media = pngCache && pngCache.get("d_" + item.number);
-        const caption = numberedMediaCaption(item.number, "rasm", item.caption, item.title);
+        // Rasm ostidagi nom — sxema sarlavhasi ("Izoh: ..." matni bob matnida tushuntiriladi)
+        const caption = numberedMediaCaption(item.number, "rasm", item.title, String(item.caption || "").replace(/^\s*(izoh|примечание|note)\s*:\s*/i, ""));
         if (media) {
           nodes.push(...imageBlock(media, caption, { maxPageFraction: FIGURE_PAGE_FRACTION }));
         } else {

@@ -1,6 +1,6 @@
 const MEDIA_TYPES = new Set(["formula", "chart", "flowchart", "table"]);
 const { selectFlowchartTemplates } = require("./flowchart-templates");
-const { classifyMatplotlibType } = require("./diagram-types");
+const { classifyMatplotlibType, EXTRA_CHART_KINDS, suitableChartTypes } = require("./diagram-types");
 
 function countFor(chapter, type, plans) {
   const field = `${type}_count`;
@@ -56,6 +56,7 @@ function buildMediaSlots(chapters = [], { random = Math.random, topic = "" } = {
       purpose: plan.purpose,
       caption: plan.caption,
       diagram_type: plan.diagram_type,
+      auto_type: Boolean(plan.auto_type),
     };
   });
   const templates = selectFlowchartTemplates(contexts, random);
@@ -79,6 +80,7 @@ function buildMediaSlots(chapters = [], { random = Math.random, topic = "" } = {
       template_guidance: template.topologyGuidance,
     };
   });
+  const usedChartKinds = new Set();
   for (const slot of slots.filter(item => item.type === "chart")) {
     const chapter = chapters[slot.chapterIndex] || {};
     const section = Array.isArray(chapter.sections) ? chapter.sections[slot.sectionIndex] : null;
@@ -96,6 +98,30 @@ function buildMediaSlots(chapters = [], { random = Math.random, topic = "" } = {
     if (slot.diagram_type === "mathematical_graph") slot.chartType = "line";
     if (slot.diagram_type === "experiment_results" && !["bar", "line"].includes(slot.chartType)) {
       slot.chartType = /trend|vaqt|time|dinamik/i.test(`${plan.title || ""} ${plan.variable || ""}`) ? "line" : "bar";
+    }
+    // Xilma-xillik: oddiy/tajriba grafiklari o'rniga mavzuga mos boshqa GOST grafik turi tanlanishi mumkin
+    // (scatter+trend, stacked bar, gorizontal bar, ikki o'qli, gistogramma). Bir hujjatda tur takrorlanmaydi.
+    const explicitExtra = EXTRA_CHART_KINDS[plan.diagram_type] ? plan.diagram_type : null;
+    if (explicitExtra && !usedChartKinds.has(explicitExtra)) {
+      slot.diagram_type = explicitExtra;
+    } else if (slot.diagram_type !== "mathematical_graph") {
+      const current = slot.diagram_type || `classic:${slot.chartType}`;
+      const context = { topic, chapterTitle: chapter.title, sectionTitle: section?.title, planTitle: plan.title, purpose: plan.purpose, variable: plan.variable };
+      const options = [current, ...suitableChartTypes(context)].filter((type, index, all) => all.indexOf(type) === index && !usedChartKinds.has(type));
+      const top = options.slice(0, 3);
+      if (top.length) slot.diagram_type = top[Math.floor(random() * top.length) % top.length];
+      if (String(slot.diagram_type).startsWith("classic:")) slot.diagram_type = null;
+    }
+    if (EXTRA_CHART_KINDS[slot.diagram_type]) slot.chartType = EXTRA_CHART_KINDS[slot.diagram_type];
+    usedChartKinds.add(slot.diagram_type || `classic:${slot.chartType}`);
+    const chapterPlans = chapter.chart_plans;
+    const originalPlan = Array.isArray(chapterPlans) ? chapterPlans[slot.ordinal - 1] : null;
+    if (EXTRA_CHART_KINDS[slot.diagram_type]) {
+      if (originalPlan && typeof originalPlan === "object") {
+        originalPlan.diagram_type = slot.diagram_type;
+        originalPlan.chartType = slot.chartType;
+      }
+      slot.plan = { ...plan, diagram_type: slot.diagram_type, chartType: slot.chartType };
     }
   }
   return slots;

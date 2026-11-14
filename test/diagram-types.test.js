@@ -145,8 +145,9 @@ const pid = {
 test("mavzu semantikasi yetti nomlangan diagramma turiga yo‘naltiriladi", () => {
   assert.deepEqual(GRAPHVIZ_DIAGRAM_TYPES, [
     "functional_block_diagram", "algorithm_flowchart", "pid_control_system", "uml_software_architecture", "process_sequence",
+    "classification_tree", "ishikawa_diagram", "timeline_diagram", "cycle_diagram", "swot_matrix", "automation_scheme",
   ]);
-  assert.deepEqual(MATPLOTLIB_DIAGRAM_TYPES, ["mathematical_graph", "experiment_results"]);
+  assert.deepEqual(MATPLOTLIB_DIAGRAM_TYPES, ["mathematical_graph", "experiment_results", "scatter_trend", "stacked_bar", "horizontal_bar", "dual_axis", "histogram"]);
   assert.equal(classifyGraphvizType({ topic: "Funksional blok-sxema Graphviz" }), "functional_block_diagram");
   assert.equal(classifyGraphvizType({ topic: "Algoritm blok-sxemasi Graphviz" }), "algorithm_flowchart");
   assert.equal(classifyGraphvizType({ topic: "Boshqaruv tizimi PID Graphviz" }), "pid_control_system");

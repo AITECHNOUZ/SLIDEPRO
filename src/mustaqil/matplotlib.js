@@ -71,7 +71,7 @@ const DISPLAY_WIDTH_PX = Math.round(6.2 * 96);
 async function renderMatplotlibChart(chart) {
   const normalized = normalizeChartData(chart);
   const diagramType = normalized.diagram_type || "simple";
-  if (!["mathematical_graph", "experiment_results", "simple"].includes(diagramType)) {
+  if (!["mathematical_graph", "experiment_results", "simple", "scatter_trend", "stacked_bar", "horizontal_bar", "dual_axis", "histogram"].includes(diagramType)) {
     throw new Error(`chart: Matplotlib uchun noma'lum diagram_type (${diagramType})`);
   }
   const payload = { ...normalized, diagram_type: diagramType };

@@ -5,6 +5,7 @@
 const sharp = require("sharp");
 const { normalizeChartData } = require("./chart-data");
 const { renderMatplotlibChart } = require("./matplotlib");
+const { EXTRA_CHART_TYPES } = require("./chart-data");
 
 let svgFallbackReported = false;
 // SVG zaxira ham GOST palitrasida: to'q ko'k oqim, och ko'k maydon, kulranglar.
@@ -168,6 +169,7 @@ function pieSVG({ labels, values }) {
 }
 
 async function renderChart(chart) {
+  if (EXTRA_CHART_TYPES[chart?.diagram_type]) return renderMatplotlibChart(chart);
   const { chartType, labels, values, title, unit } = normalizeChartData(chart);
   if (["mathematical_graph", "experiment_results"].includes(chart.diagram_type)) {
     return renderMatplotlibChart({ ...chart, chartType, labels, values, title, unit });

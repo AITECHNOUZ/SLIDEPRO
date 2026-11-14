@@ -28,7 +28,7 @@ const {
 const { renderChart }   = require("./chart");
 const { renderFlowchart } = require("./flowchart");
 const { getFlowchartTemplate } = require("./flowchart-templates");
-const { classifyGraphvizType } = require("./diagram-types");
+const { classifyGraphvizType, EXTRA_CHART_KINDS } = require("./diagram-types");
 const { buildDocument, tocEntries } = require("./builder");
 const { renumberMedia } = require("./media-numbering");
 const { countWords, chapterMainNumber, normalizeChapterContent, clampChapterContent } = require("./structure");
@@ -84,6 +84,15 @@ function parseStructuredJson(text) {
   return parsed;
 }
 
+const CHART_GOST_NOTE = "GOST uslubi: o'q yozuvlarida kattalik belgisi va birlik bo'lsin (masalan \"Harorat $T$\", unit \"°C\"); o'nli kasrni nuqta bilan yoz (render vergulga o'giradi). Mazmunan muhim chegara/me'yor bo'lsa ixtiyoriy \"threshold\":{\"value\":...,\"label\":\"...\"} qo'sh — qizil punktir bo'lib chiziladi. Qiymatlar mavzuga mos, realistik va o'zaro izchil bo'lsin; manba promptda berilmagan bo'lsa data_source ni bo'sh qoldir, manba to'qima.";
+const EXTRA_CHART_PROMPTS = {
+  scatter_trend: slot => `Tarqoqlik diagrammasi + trend chizig'i (regressiya) uchun JSON qaytar: ikki kattalik o'rtasidagi bog'liqlikni ko'rsatuvchi 6–20 ta o'lchov nuqtasi ([x, y]) ber; fit — "linear", "quadratic" yoki "exponential" (fizik ma'noga mos). Tenglama va R² ni dastur o'zi hisoblaydi. ${CHART_GOST_NOTE} JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"scatter_trend","chartType":"scatter","title":"...","points":[[1.0,2.1],[2.0,3.9]],"fit":"linear","x_label":"... $x$","x_unit":"...","y_label":"... $y$","unit":"...","series_name":"O'lchov natijalari","data_source":"","caption":"..."}`,
+  stacked_bar: slot => `Yig'ma (stacked) ustunli diagramma uchun JSON qaytar: 2–6 ta kategoriya (yillar, obyektlar) va har birining tarkibiy qismlari — 2–4 ta series, manfiy bo'lmagan qiymatlar (masalan, ulushlar % yoki hajmlar). ${CHART_GOST_NOTE} JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"stacked_bar","chartType":"stacked_bar","title":"...","labels":["...","..."],"series":[{"name":"...","values":[1,2]},{"name":"...","values":[1,2]}],"x_label":"","y_label":"...","unit":"...","data_source":"","caption":"..."}`,
+  horizontal_bar: slot => `Gorizontal ustunli (reyting/taqqoslash) diagramma uchun JSON qaytar: 4–8 ta taqqoslanadigan obyekt (usul, hudud, qurilma) va har biriga bitta son qiymat; label 1–4 so'z. Dastur ularni kattadan kichikka saralaydi. ${CHART_GOST_NOTE} JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"horizontal_bar","chartType":"barh","title":"...","labels":["...","...","..."],"values":[1,2,3],"x_label":"...","unit":"...","data_source":"","caption":"..."}`,
+  dual_axis: slot => `Ikki o'qli kombinatsiyalangan diagramma uchun JSON qaytar: 4–8 ta davr/kategoriya; chap o'qda (ustunlar) bitta kattalik, o'ng o'qda (chiziq) boshqa birlikdagi bog'liq kattalik (masalan, ishlab chiqarish hajmi va solishtirma sarf). Ikkala kattalik nomi va birligi har xil bo'lsin. ${CHART_GOST_NOTE} JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"dual_axis","chartType":"dual_axis","title":"...","labels":["...","...","..."],"left":{"name":"...","unit":"...","values":[1,2,3]},"right":{"name":"...","unit":"...","values":[1,2,3]},"x_label":"","data_source":"","caption":"..."}`,
+  histogram: slot => `Gistogramma (taqsimot) uchun JSON qaytar: o'lchanadigan kattalik qiymatlarining teng oraliqlarga bo'lingan taqsimoti — 5–10 ta interval; bin_edges intervallar chegaralari (counts sonidan bitta ko'p, o'suvchi), counts har intervaldagi kuzatuvlar soni (butun, manfiy emas, odatda markazda kattaroq). Dastur normal taqsimot egri chizig'ini o'zi qo'shadi. ${CHART_GOST_NOTE} JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"histogram","chartType":"histogram","title":"...","bin_edges":[0,10,20,30,40,50],"counts":[3,8,15,9,4],"x_label":"... $x$","unit":"...","y_label":"Chastota","data_source":"","caption":"..."}`,
+};
+
 function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
   const planText = JSON.stringify(slot.plan || {});
   const flowchartTemplate = getFlowchartTemplate(slot.diagram_type || slot.template_id || slot.plan?.diagram_type || slot.plan?.template_id);
@@ -92,12 +101,13 @@ function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
   const common = `Mavzu: ${topic || "Mavzu"}.${chapterContext} Til: ${language || "o'zbek"}. Slot ID: ${slot.slot_id}. Reja: ${planText}.${source}\nFaqat bitta media obyektini tuz. Slot ID va type qiymatlarini aynan saqla; boshqa izoh yoki markdown bermagin. Sarlavha va caption media mazmunini tabiiy, qisqa ifodalasin; ularga meta-ma'lumot yoki status yorlig'i qo'shma.`;
   const schemas = {
     formula: `${(typeof slot.plan === "string" ? slot.plan : slot.plan?.latex) ? "Aynan rejalashtirilgan LaTeX formulani qaytar, yangi formula to'qima." : "Rejada faqat formula konsepti berilgan: shu bob mazmuniga AYNAN mos, darsliklarda qabul qilingan, boshqa boblardagi formulalarni takrorlamaydigan bitta asosiy formula yoz (umumiy F=ma kabi mavzudan uzoq formulalar emas)."} Formula Word'ga OMML (native tenglama) bo'lib tushadi, shuning uchun toza standart LaTeX yoz: \\frac, ^{}, _{}, \\sqrt, \\sum, \\int, \\left( \\right), \\text{} — $ belgilari, \\label, \\tag yoki raqam qo'shma. "where" maydonida formuladagi HAR BIR belgini ketma-ket izohla: belgi $...$ ichida, keyin tire, ma'nosi va o'lchov birligi (masalan: "$U$ — kuchlanish, V; $I$ — tok kuchi, A; $R$ — qarshilik, Om"). "bu yerda" so'zini yozma — dastur o'zi qo'shadi. JSON: {"slot_id":"${slot.slot_id}","type":"formula","latex":"...","display_text":"...","caption":"...","where":"$X$ — ..., birlik; $Y$ — ..., birlik"}`,
-    chart: slot.diagram_type === "mathematical_graph"
+    chart: EXTRA_CHART_PROMPTS[slot.diagram_type] ? EXTRA_CHART_PROMPTS[slot.diagram_type](slot)
+      : slot.diagram_type === "mathematical_graph"
       ? `Matplotlib matematik grafik uchun JSON qaytar. 1–5 ta mavzuga mos aniq funksiyani yoz; rejadagi functions, x_min va x_max mavjud bo‘lsa ularni aynan saqla, mavzu/rejaga zid funksiya bilan almashtirma. Ifodada faqat x, pi, e, raqamlar, + - * / **, qavs va sin/cos/tan/asin/acos/atan/sinh/cosh/tanh/exp/log/log10/sqrt/abs funksiyalaridan foydalan. x_min < x_max bo‘lsin; render 501 namunaviy nuqtani hisoblab, silliq egri chiziq chizadi — y qiymatlarini qo‘lda sanab kiritma. Oraliq va ifoda mazmuniga mos, sarlavha/birlik/o‘qlarni aniq yoz. GOST uslubi: o'q yozuvlarida kattalik belgisi va birlik bo'lsin (masalan \"Harorat $T$\", unit \"°C\"); mazmunan muhim chegara/me'yor qiymati bo'lsa, ixtiyoriy \"threshold\":{\"value\":...,\"label\":\"...\"} maydonini qo'sh — u qizil punktir chiziq bo'lib chiziladi. Haqiqiy manba promptda bo‘lmasa, manba uydirma qilma va data_source ni bo‘sh qoldir. JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"mathematical_graph","chartType":"line","title":"...","functions":[{"name":"f(x)","expression":"x**2"}],"x_min":-5,"x_max":5,"x_label":"x","y_label":"f(x)","unit":"","data_source":"","caption":"..."}`
       : slot.diagram_type === "experiment_results"
         ? `Matplotlib tajriba natijalari diagrammasi uchun JSON qaytar. chartType=${slot.chartType}; labels 2–8 ta tajriba sharti, vaqt nuqtasi yoki guruhni ifodalasin. 1–5 ta nomlangan series ber; har series.values massivida label sonicha finite son, yagona birlik va mavzuga mos diapazon bo‘lsin. Rejada labels/series/values berilgan bo‘lsa ularni aynan saqla; boshqa natija yoki aloqasiz guruh qo‘shma. Natijalar mavzu va reja maqsadiga bevosita bog‘liq bo‘lsin; grafikda o‘qlarning nomi va birliklarini aniq ko‘rsat. GOST uslubi: o'q yozuvlarida kattalik belgisi va birlik bo'lsin (masalan \"Harorat $T$\", unit \"°C\"); mazmunan muhim chegara/me'yor qiymati bo'lsa, ixtiyoriy \"threshold\":{\"value\":...,\"label\":\"...\"} maydonini qo'sh — u qizil punktir chiziq bo'lib chiziladi. Haqiqiy manba promptda aniq berilmagan bo‘lsa, manba nomini to‘qima va data_source ni bo‘sh qoldir. JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"experiment_results","chartType":"${slot.chartType}","title":"...","labels":["...","..."],"series":[{"name":"Tajriba 1","values":[1,2]}],"x_label":"...","y_label":"...","unit":"","data_source":"","caption":"..."}`
         : `Faqat grafik ma'lumotini qaytar. chartType=${slot.chartType}. 2–8 qisqa label va ularga mos finite sonli values; pie uchun ko'pi bilan 5 label va manfiy bo'lmagan qiymatlar. Qiymatlar mavzu, reja va kontekstga mos hamda o'zaro izchil bo'lsin. GOST uslubi: o'q yozuvlarida kattalik belgisi va birlik bo'lsin (masalan \"Harorat $T$\", unit \"°C\"); mazmunan muhim chegara/me'yor qiymati bo'lsa, ixtiyoriy \"threshold\":{\"value\":...,\"label\":\"...\"} maydonini qo'sh — u qizil punktir chiziq bo'lib chiziladi.  mavzuga aloqasiz ma'lumot yoki manba uydirma qilma. Haqiqiy manba promptda berilmagan bo'lsa, data_source maydonini bo'sh qoldir. Sarlavha/captionda sintetik, AI yoki real emas kabi status yorliqlarini ishlatma. JSON: {"slot_id":"${slot.slot_id}","type":"chart","chartType":"${slot.chartType}","title":"...","labels":["..."],"values":[1,2],"unit":"","data_source":"","caption":"..."}`,
-    flowchart: `Faqat blok-sxema uchun JSON strukturani qaytar (u GOST 19.701 / GOST 2.721 uslubida chiziladi); DOT yoki kod qaytarma. Tanlangan va o‘zgarmas diagram_type: ${flowchartTemplate.id} — ${flowchartTemplate.name}. Grafik yo‘nalishi: ${flowchartTemplate.direction}. ${flowchartTemplate.topologyGuidance} Mavzu, bob va reja maqsadiga bevosita mos, mavzuga xos tugun va aloqalar tanla; generic to‘ldiruvchilar yoki boshqa diagramma turining elementlarini ishlatma. Faqat quyidagi kind qiymatlari mumkin: ${flowchartTemplate.allowedKinds.join(", ")}. Umumiy limit 2–5 node va 1–7 edge; algoritm 3–5 tugunli bo‘lib bitta start/end talab qiladi; PID uchun aynan 5 tugun va sensor→sum yopiq aloqa shart. Label 1–5 so‘z, ID xavfsiz, barcha node'lar bog‘langan bo‘lsin. Sarlavha va label mavzuga mos o‘zbekcha yoki inglizcha bo‘lsin; o‘zbekcha captionni "Izoh:" bilan qisqa yoz. JSON: {"slot_id":"${slot.slot_id}","type":"flowchart","diagram_type":"${flowchartTemplate.id}","title":"...","caption":"Izoh: ...","nodes":[{"id":"item1","label":"...","kind":"${flowchartTemplate.allowedKinds[0]}"},{"id":"item2","label":"...","kind":"${flowchartTemplate.allowedKinds[Math.min(1, flowchartTemplate.allowedKinds.length - 1)]}"}],"edges":[{"from":"item1","to":"item2","label":""}]}`,
+    flowchart: `Faqat blok-sxema uchun JSON strukturani qaytar (u GOST 19.701 / GOST 2.721 uslubida chiziladi); DOT yoki kod qaytarma. Tanlangan va o‘zgarmas diagram_type: ${flowchartTemplate.id} — ${flowchartTemplate.name}. Grafik yo‘nalishi: ${flowchartTemplate.direction}. ${flowchartTemplate.topologyGuidance} Mavzu, bob va reja maqsadiga bevosita mos, mavzuga xos tugun va aloqalar tanla; generic to‘ldiruvchilar yoki boshqa diagramma turining elementlarini ishlatma. Faqat quyidagi kind qiymatlari mumkin: ${flowchartTemplate.allowedKinds.join(", ")}. Cheklovlar: ${flowchartTemplate.limitsText || "2–5 node va 1–7 edge"}. Label qisqa (1–${flowchartTemplate.limits?.maxLabelWords || 5} so‘z), ID xavfsiz${flowchartTemplate.limits?.disconnected ? "" : ", barcha node'lar bog‘langan bo‘lsin"}.${flowchartTemplate.id === "automation_scheme" ? " sensor/controller/actuator tugunlarida GOST 21.208 bo'yicha \"tag\" maydoni bo'lsin (TE — harorat datchigi, PT — bosim datchigi, FT — sarf datchigi, LT — sath datchigi, TIC/PIC/FIC — rostlagich, FV/TV — rostlovchi klapan)." : ""}${flowchartTemplate.id === "timeline_diagram" ? " Har bir event tugunida \"date\" maydoni (yil yoki davr, masalan \"1991-y.\") bo'lsin; tugunlar xronologik tartibda." : ""} Sarlavha va label mavzuga mos o‘zbekcha yoki inglizcha bo‘lsin; o‘zbekcha captionni "Izoh:" bilan qisqa yoz. JSON: {"slot_id":"${slot.slot_id}","type":"flowchart","diagram_type":"${flowchartTemplate.id}","title":"...","caption":"Izoh: ...","nodes":${flowchartTemplate.example ? JSON.stringify(flowchartTemplate.example.nodes) : `[{"id":"item1","label":"...","kind":"${flowchartTemplate.allowedKinds[0]}"},{"id":"item2","label":"...","kind":"${flowchartTemplate.allowedKinds[Math.min(1, flowchartTemplate.allowedKinds.length - 1)]}"}]`},"edges":${flowchartTemplate.example ? JSON.stringify(flowchartTemplate.example.edges) : `[{"from":"item1","to":"item2","label":""}]`}}`,
     table: `Faqat bitta TAQQOSLASH JADVALI ma'lumotini qaytar: birinchi ustun — taqqoslanayotgan obyektlar (usullar, turlar, qurilmalar, davrlar yoki variantlar), keyingi 2–4 ustun — aniq mezonlar (afzallik, kamchilik, qo'llanish sohasi, asosiy ko'rsatkich va h.k.); raqamli ustunlarda o'lchov birligi ustun sarlavhasida bo'lsin (masalan, "FIK, %"). Kataklar qisqa (1–8 so'z) bo'lsin; kamida 3 ustun va 3–6 qator, barcha qatorlarda ustunlar soni teng bo'lsin. Haqiqiy manba yoki o'lchov bo'lishi shart emas: jadvalni mavzuga mos, iloji boricha realistik tafsilotlar va (kerak bo'lsa) ishonarli raqamlar bilan to'ldir. Raqamli qiymatlarning diapazoni, birliklari, aniqlik darajasi va qatorlar orasidagi munosabatlar o'zaro mantiqan izchil bo'lsin. Manba promptda aniq berilmagan bo'lsa, manba nomi yoki havolasini uydirma qilma. Sarlavha/captionda sintetik, AI yoki real emas kabi status yorliqlarini ishlatma; jadval mazmunini tabiiy ifodala. JSON: {"slot_id":"${slot.slot_id}","type":"table","title":"...","caption":"...","headers":["A","B","C"],"rows":[["...","...","..."],["...","...","..."],["...","...","..."]]}`,
   };
   return `${common}\n${schemas[slot.type] || "Noma'lum media turi."}`;
@@ -260,7 +270,7 @@ function fallbackFlowchart(plan, chapter, language, index) {
       ? `Основные понятия и содержательные связи по теме «${subject}»`
       : `Key concepts and topic-specific relationships for ${subject}`;
   const labels = fallbackFlowchartLabels(plan, chapter);
-  const diagramType = plan?.diagram_type || plan?.template_id || classifyGraphvizType({
+  let diagramType = plan?.diagram_type || plan?.template_id || classifyGraphvizType({
     topic: subject,
     chapterTitle: chapter?.title,
     planTitle: plan?.title,
@@ -272,6 +282,11 @@ function fallbackFlowchart(plan, chapter, language, index) {
       if (candidate && !uniqueLabels.some(label => label.toLocaleLowerCase() === candidate.toLocaleLowerCase())) uniqueLabels.push(candidate.split(/\s+/).slice(0, 5).join(" "));
       if (uniqueLabels.length >= 2) break;
     }
+  }
+  // Maxsus ma'lumot (sana, tag, kategoriyalar) talab qiladigan turlar zaxirada oddiy ketma-ketlikka aylanadi
+  if (["classification_tree", "ishikawa_diagram", "timeline_diagram", "swot_matrix", "automation_scheme"].includes(diagramType)
+    || (diagramType === "cycle_diagram" && uniqueLabels.length < 3)) {
+    diagramType = "process_sequence";
   }
   const actionLabel = uniqueLabels.find(label => !/^(boshlash|yakunlash|start|end)$/i.test(label)) || String(plan?.title || subject).split(/\s+/).slice(0, 5).join(" ");
   let nodes;
@@ -341,6 +356,9 @@ function fallbackFlowchart(plan, chapter, language, index) {
       }));
       edges = nodes.slice(0, -1).map((node, nodeIndex) => ({ from: node.id, to: nodes[nodeIndex + 1].id, label: "" }));
     }
+  } else if (diagramType === "cycle_diagram") {
+    nodes = uniqueLabels.slice(0, 6).map((label, nodeIndex) => ({ id: `stage${nodeIndex + 1}`, label: label.split(/\s+/).slice(0, 4).join(" "), kind: "stage" }));
+    edges = nodes.map((node, nodeIndex) => ({ from: node.id, to: nodes[(nodeIndex + 1) % nodes.length].id, label: "" }));
   } else {
     const hierarchicalUml = diagramType === "uml_software_architecture" && /ierarx|hierarch|daraxt|tree/i.test(`${plan?.title || ""} ${plan?.purpose || ""}`);
     const nodeLabels = uniqueLabels.slice(0, 5);
@@ -480,8 +498,8 @@ function alignPlannedFlowchartBlocks(chapter, content, language = "o'zbek") {
       flowchart = fallbackFlowchart({ ...plan, diagram_type: diagramType }, chapter, language, index);
     }
     flowchart.title = cleanMediaText(flowchart.title || plan.title || "Oqim sxemasi", "Oqim sxemasi").slice(0, 180);
-    flowchart.diagram_type = diagramType;
-    flowchart.template_id = diagramType;
+    flowchart.diagram_type = flowchart.diagram_type || diagramType;
+    flowchart.template_id = flowchart.diagram_type;
     // Yorliq tili Graphviz renderiga ta'sir qilmaydi; captionda qisqa o'zbekcha izoh qoladi.
     flowchart.caption = cleanMediaText(buildFlowchartCaption(flowchart, plan.purpose, language), flowchart.title);
     return flowchart;
@@ -519,10 +537,11 @@ function normalizeMediaSlotResult(slot, response, { chapter, language }) {
 
   if (slot.type === "chart") {
     const diagramType = slot.diagram_type || plan.diagram_type;
-    const chartType = diagramType === "mathematical_graph" ? "line"
-      : diagramType === "experiment_results" && !["bar", "line"].includes(slot.chartType) ? "bar"
-        : slot.chartType;
-    if (!["bar", "line", "pie"].includes(chartType)) throw new Error(`noma'lum chartType (${chartType})`);
+    const chartType = EXTRA_CHART_KINDS[diagramType] ? EXTRA_CHART_KINDS[diagramType]
+      : diagramType === "mathematical_graph" ? "line"
+        : diagramType === "experiment_results" && !["bar", "line"].includes(slot.chartType) ? "bar"
+          : slot.chartType;
+    if (!["bar", "line", "pie"].includes(chartType) && !EXTRA_CHART_KINDS[diagramType]) throw new Error(`noma'lum chartType (${chartType})`);
     const candidate = { ...plan, ...response, type: "chart", chartType, ...(diagramType ? { diagram_type: diagramType } : {}) };
     candidate.title = cleanMediaText(plan.title || response.title || `${chapter?.title || "Mavzu"}: asosiy ko'rsatkichlar`, `${chapter?.title || "Mavzu"}: asosiy ko'rsatkichlar`);
     const source = String(response.data_source || response.source || plan.data_source || "").trim();
@@ -537,7 +556,7 @@ function normalizeMediaSlotResult(slot, response, { chapter, language }) {
       ...response,
       type: "flowchart",
       diagram_type: diagramType,
-      title: cleanMediaText(plan.title || response.title || "Oqim sxemasi", "Oqim sxemasi"),
+      title: cleanMediaText((plan.auto_type ? response.title || plan.title : plan.title || response.title) || "Oqim sxemasi", "Oqim sxemasi"),
     }, { language, diagramType });
     return {
       type: "flowchart",
@@ -626,8 +645,12 @@ function fallbackMediaSlot(slot, { chapter, language }) {
     const [chart] = alignPlannedChartBlocks({
       ...chapter,
       chart_count: 1,
-      chart_type: slot.chartType,
-      chart_plans: [typeof plan === "object" && plan ? plan : {}],
+      chart_type: EXTRA_CHART_KINDS[slot.diagram_type] ? "bar" : slot.chartType,
+      chart_plans: [typeof plan === "object" && plan
+        ? (EXTRA_CHART_KINDS[slot.diagram_type] || EXTRA_CHART_KINDS[plan.diagram_type]
+          ? { title: plan.title, variable: plan.variable, purpose: plan.purpose, caption: plan.caption, unit: plan.unit }
+          : plan)
+        : {}],
     }, []).filter(item => item.type === "chart");
     return { ...chart, slot_id: slot.slot_id, caption: cleanMediaText(chart.caption || chart.title, chart.title), _syntheticFallback: true };
   }
@@ -708,6 +731,26 @@ async function generateMediaSlot(slot, { chapter, topic, language, sourceContent
     return { slot, item: { type: "skip", slot_id: slot.slot_id }, image: null, fallback: true, skipped: true };
   }
   const item = fallbackMediaSlot(slot, { chapter, language });
+  if (slot.type === "chart" && EXTRA_CHART_KINDS[slot.diagram_type] && item.diagram_type !== slot.diagram_type) {
+    // Maxsus grafik yaroqsiz chiqdi — zaxira oddiy ustunli grafikka o'tadi, reja ham moslanadi
+    const plans = chapter?.chart_plans;
+    const original = Array.isArray(plans) ? plans[slot.ordinal - 1] : null;
+    if (original && typeof original === "object") {
+      delete original.diagram_type;
+      original.chartType = item.chartType;
+    }
+    slot.diagram_type = item.diagram_type || null;
+    slot.chartType = item.chartType;
+  }
+  if (slot.type === "flowchart" && item.diagram_type && item.diagram_type !== slot.diagram_type) {
+    // Zaxira sxema soddaroq turga o'tdi — reja va tekshiruv ham shu turga moslanadi
+    const plans = chapter?.flowchart_plans;
+    const original = Array.isArray(plans) ? plans[slot.ordinal - 1] : null;
+    if (original && typeof original === "object") original.diagram_type = item.diagram_type;
+    slot.diagram_type = item.diagram_type;
+    slot.template_id = item.diagram_type;
+    if (slot.plan && typeof slot.plan === "object") slot.plan = { ...slot.plan, diagram_type: item.diagram_type, template_id: item.diagram_type };
+  }
   try {
     const image = await renderAndVerifyMedia(item, language);
     console.warn(`[mustaqil] media slot ${slot.slot_id} sintetik/reja fallback bilan to'ldirildi (${lastError?.message || "xato"})`);
@@ -1088,7 +1131,7 @@ async function fitDocumentToPages({ spec, pngCache, buf, outline, llm, language,
   };
 }
 
-async function generateMustaqilIsh({ topic, pages, language, studentName, studentGroup, org, supervisor, university, faculty, department, includeToc = false, sourceContent, llm, outFile, flowchartCount = null, chartCount, chartPlans, formulaCount, formulaPlans, onProgress }) {
+async function generateMustaqilIsh({ topic, pages, language, studentName, studentGroup, org, supervisor, university, faculty, department, includeToc = false, sourceContent, llm, outFile, flowchartCount = null, chartCount, chartPlans, formulaCount, formulaPlans, onProgress, random = Math.random }) {
   const reportProgress = async (percent, phase) => {
     if (typeof onProgress !== "function") return;
     try { await onProgress({ percent, phase }); }
@@ -1259,7 +1302,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   console.log("[mustaqil] outline:", outline.chapters.length+" bob, target="+outline.total_words_target+" so'z");
 
   // Slot IDs come from the normalized outline and remain stable through generation and assembly.
-  const mediaSlots = buildMediaSlots(outline.chapters, { topic });
+  const mediaSlots = buildMediaSlots(outline.chapters, { topic, random });
   const slotsByChapter = groupMediaSlotsByChapter(mediaSlots);
   console.log(`[mustaqil] media slotlari: ${mediaSlots.length} ta (${mediaSlots.map(slot => slot.slot_id).join(", ") || "yo'q"})`);
   await reportProgress(12, "Reja va manbalar tayyor");

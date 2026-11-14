@@ -546,6 +546,608 @@ def draw_tree(data):
     return canvas
 
 
+# ── Til bo'yicha xizmat yozuvlari ─────────────────────────
+WORDS = {
+    "uz": {"S": "Kuchli tomonlar (S)", "W": "Zaif tomonlar (W)", "O": "Imkoniyatlar (O)", "T": "Tahdidlar (T)",
+           "internal": "Ichki omillar", "external": "Tashqi omillar", "positive": "Ijobiy", "negative": "Salbiy",
+           "panel": "Boshqaruv\nshiti", "local": "Joyida"},
+    "ru": {"S": "Сильные стороны (S)", "W": "Слабые стороны (W)", "O": "Возможности (O)", "T": "Угрозы (T)",
+           "internal": "Внутренние факторы", "external": "Внешние факторы", "positive": "Положительные", "negative": "Отрицательные",
+           "panel": "Щит\nуправления", "local": "По месту"},
+    "en": {"S": "Strengths (S)", "W": "Weaknesses (W)", "O": "Opportunities (O)", "T": "Threats (T)",
+           "internal": "Internal factors", "external": "External factors", "positive": "Positive", "negative": "Negative",
+           "panel": "Control\npanel", "local": "Local"},
+}
+
+
+def words(data):
+    lang = str(data.get("language") or "").lower()
+    if lang.startswith(("ru", "рус")):
+        return WORDS["ru"]
+    if lang.startswith(("en", "ing")):
+        return WORDS["en"]
+    return WORDS["uz"]
+
+
+def plain_text(canvas, point, text, size=FONT_SIZE, ha="center", va="center", weight="normal", italic=False,
+               color=BLACK, rotation=0):
+    if not text:
+        return
+    props = FontProperties(family=FONT, size=size, weight=weight, style="italic" if italic else "normal")
+    tw, th = text_size(text, props)
+    if rotation:
+        tw, th = th, tw
+    x, y = point
+    x0 = x - tw / 2 if ha == "center" else (x - tw if ha == "right" else x)
+    y0 = y - th / 2 if va == "center" else (y - th if va == "top" else y)
+    canvas.add(lambda ax: ax.text(x, y, text, ha=ha, va=va, fontsize=size, family=FONT, weight=weight,
+                                  style="italic" if italic else "normal", color=color, zorder=8,
+                                  linespacing=1.15, rotation=rotation),
+               (x0, y0, x0 + tw, y0 + th))
+
+
+def line(canvas, points, color=BLACK, width=CONTOUR_PT, style="-"):
+    pts = [tuple(p) for p in points]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    canvas.add(lambda ax: ax.plot(xs, ys, color=color, linewidth=width, linestyle=style,
+                                  solid_joinstyle="miter", solid_capstyle="butt", zorder=2),
+               (min(xs), min(ys), max(xs), max(ys)))
+
+
+def fitted_blocks(nodes, max_total, gap, widths=(16, 14, 12, 10, 8), fill=None):
+    """Bir qatorga sig'adigan eng keng yozuvli bloklarni tanlaydi."""
+    blocks = []
+    for width in widths:
+        blocks = [make_block(node, width) for node in nodes]
+        if fill:
+            for b in blocks:
+                b.fill = fill
+        unify(blocks, height=True)
+        if sum(b.w for b in blocks) + gap * (len(blocks) - 1) <= max_total:
+            return blocks
+    return blocks
+
+
+# ── Tasnif (klassifikatsiya) daraxti ─────────────────────
+def tree_structure(data):
+    nodes = data["nodes"]
+    children = {node["id"]: [] for node in nodes}
+    for edge in data["edges"]:
+        children[edge["from"]].append(edge["to"])
+    by_id = {node["id"]: node for node in nodes}
+    root = next(node for node in nodes if node.get("kind") == "root")
+    categories = [by_id[i] for i in children[root["id"]]]
+    return root, categories, {c["id"]: [by_id[i] for i in children[c["id"]]] for c in categories}
+
+
+def draw_classification_vertical(data):
+    root_node, categories, items = tree_structure(data)
+    canvas = Canvas()
+    gap_x, gap_y, item_gap = 0.2, 0.5, 0.16
+    cats = fitted_blocks(categories, MAX_WIDTH_IN, gap_x, fill=BLUE_LIGHT)
+    root = make_block(root_node, 30)
+    root.label = root.label
+    x = 0.0
+    for b in cats:
+        b.x = x + b.w / 2
+        x += b.w + gap_x
+    total = x - gap_x
+    root.x, root.y = total / 2, 0.0
+    cat_y = -(root.h / 2 + gap_y + cats[0].h / 2)
+    for b in cats:
+        b.y = cat_y
+    root.draw(canvas)
+    bus_y = root.y - root.h / 2 - gap_y / 2
+    wire(canvas, [root.bottom(), (root.x, bus_y)], arrow=False)
+    wire(canvas, [(cats[0].x, bus_y), (cats[-1].x, bus_y)], arrow=False)
+    if cats[0].x < root.x < cats[-1].x:
+        dot(canvas, (root.x, bus_y))
+    for b, cat_node in zip(cats, categories):
+        b.draw(canvas)
+        if cats[0].x < b.x < cats[-1].x and abs(b.x - root.x) > 1e-6:
+            dot(canvas, (b.x, bus_y))
+        wire(canvas, [(b.x, bus_y), b.top()])
+        kids = items[cat_node["id"]]
+        if not kids:
+            continue
+        # Bolalar ota ostida ustun bo'lib: chap tomondagi umurtqa → o'ng tomonga strelka
+        spine_x = b.x - b.w / 2 + 0.12
+        width = b.w - 0.24
+        y = b.y - b.h / 2 - item_gap
+        last_y = None
+        kid_blocks = []
+        for kid in kids:
+            for wrap_try in (14, 12, 10, 8):
+                kb = make_block(kid, wrap_try)
+                if kb.w <= width:
+                    break
+            kb.w = max(kb.w, width - 0.04)
+            kb.x = spine_x + 0.16 + kb.w / 2
+            kb.y = y - kb.h / 2
+            y -= kb.h + item_gap
+            kid_blocks.append(kb)
+        for kb in kid_blocks:
+            kb.draw(canvas)
+            wire(canvas, [(spine_x, kb.y), kb.left()])
+            last_y = kb.y
+        line(canvas, [(spine_x, b.y - b.h / 2), (spine_x, last_y)], color=BLUE_DARK, width=SIGNAL_PT)
+        for kb in kid_blocks[:-1]:
+            dot(canvas, (spine_x, kb.y))
+    return canvas
+
+
+def draw_classification_horizontal(data):
+    root_node, categories, items = tree_structure(data)
+    canvas = Canvas()
+    gap_x, gap_y = 0.42, 0.16
+    root = make_block(root_node, 12)
+    root.fill = WHITE
+    cats = [make_block(node, 16) for node in categories]
+    for b in cats:
+        b.fill = BLUE_LIGHT
+    unify(cats)
+    kid_rows = []
+    for cat in categories:
+        row = [make_block(kid, 16) for kid in items[cat["id"]]]
+        kid_rows.append(row)
+    all_kids = [k for row in kid_rows for k in row]
+    if all_kids:
+        unify(all_kids)
+    # Har bir kategoriya qatori balandligi: o'zi yoki bolalari ustuni
+    cat_x = root.w + gap_x + cats[0].w / 2
+    kid_x = cat_x + cats[0].w / 2 + gap_x + (all_kids[0].w / 2 if all_kids else 0)
+    y = 0.0
+    for b, row in zip(cats, kid_rows):
+        stack = sum(k.h for k in row) + gap_y * max(0, len(row) - 1)
+        band = max(b.h, stack)
+        b.x, b.y = cat_x, y - band / 2
+        ky = y - (band - stack) / 2
+        for k in row:
+            k.x, k.y = kid_x, ky - k.h / 2
+            ky -= k.h + gap_y
+        y -= band + gap_y * 2.2
+    # Ildiz ikki kategoriya orasida — 4 tomonlama tugun hosil bo'lmaydi
+    k = len(cats) // 2
+    root.x, root.y = root.w / 2, (cats[k - 1].y + cats[k].y) / 2
+    bus_x = root.w + gap_x / 2
+    root.draw(canvas)
+    wire(canvas, [root.right(), (bus_x, root.y)], arrow=False)
+    wire(canvas, [(bus_x, cats[0].y), (bus_x, cats[-1].y)], arrow=False)
+    dot(canvas, (bus_x, root.y))
+    for b, row in zip(cats, kid_rows):
+        b.draw(canvas)
+        if cats[0].y > b.y > cats[-1].y and abs(b.y - root.y) > 1e-6:
+            dot(canvas, (bus_x, b.y))
+        wire(canvas, [(bus_x, b.y), b.left()])
+        if not row:
+            continue
+        sub_x = b.x + b.w / 2 + gap_x / 2
+        for k in row:
+            k.draw(canvas)
+            wire(canvas, [(sub_x, k.y), k.left()])
+        wire(canvas, [b.right(), (sub_x, b.y)], arrow=False)
+        ys = [k.y for k in row] + [b.y]
+        if max(ys) - min(ys) > 1e-6:
+            line(canvas, [(sub_x, max(ys)), (sub_x, min(ys))], color=BLUE_DARK, width=SIGNAL_PT)
+        if len(row) > 1:
+            dot(canvas, (sub_x, b.y))
+        for k in row:
+            if min(ys) < k.y < max(ys) and abs(k.y - b.y) > 1e-6:
+                dot(canvas, (sub_x, k.y))
+    return canvas
+
+
+# ── Ishikava ("baliq skeleti") diagrammasi ───────────────
+def draw_ishikawa(data):
+    nodes = data["nodes"]
+    by_id = {node["id"]: node for node in nodes}
+    effect_node = next(node for node in nodes if node.get("kind") == "effect")
+    causes = [node for node in nodes if node.get("kind") == "cause"]
+    factors = {c["id"]: [] for c in causes}
+    for edge in data["edges"]:
+        if by_id[edge["from"]].get("kind") == "factor":
+            factors[edge["to"]].append(by_id[edge["from"]])
+    canvas = Canvas()
+    columns = math.ceil(len(causes) / 2)
+    effect = make_block(effect_node, 12)
+    effect.fill = BLUE_LIGHT
+    col_w = (MAX_WIDTH_IN - effect.w - 0.35) / columns
+    blocks = []
+    for wrap_try in (14, 12, 10, 8):
+        blocks = [make_block(c, wrap_try) for c in causes]
+        if max(b.w for b in blocks) <= col_w - 0.18:
+            break
+    unify(blocks)
+    bone_h = 1.05 + 0.2 * max([len(v) for v in factors.values()] + [0])
+    slope = 0.42  # suyakning gorizontal siljishi / balandlik
+    spine_y = 0.0
+    spine_x0 = 0.0
+    for index, (b, cause) in enumerate(zip(blocks, causes)):
+        col = index // 2
+        up = index % 2 == 0
+        b.x = spine_x0 + col * col_w + b.w / 2 + 0.05
+        b.y = spine_y + (bone_h + b.h / 2) * (1 if up else -1)
+    spine_end = spine_x0 + columns * col_w + 0.2
+    effect.x, effect.y = spine_end + effect.w / 2, spine_y
+    # Umurtqa — asosiy qalin chiziq, natijaga strelka
+    wire(canvas, [(spine_x0, spine_y), effect.left()], color=BLACK, width=CONTOUR_PT)
+    effect.draw(canvas)
+    factor_props = FontProperties(family=FONT, size=LABEL_SIZE)
+    for b, cause in zip(blocks, causes):
+        b.draw(canvas)
+        up = b.y > spine_y
+        start = b.bottom() if up else b.top()
+        end = (start[0] + slope * bone_h, spine_y)
+        wire(canvas, [start, end], color=BLUE_DARK, width=SIGNAL_PT)
+        kids = factors[cause["id"]]
+        for k_index, factor in enumerate(kids):
+            t = (k_index + 1) / (len(kids) + 1)
+            fy = start[1] + (end[1] - start[1]) * t
+            fx = start[0] + (end[0] - start[0]) * t
+            text = wrap(factor.get("label", ""), 14)
+            tw, th = text_size(text, factor_props)
+            # Yozuv suyakdan chapda, uning ostida gorizontal "qovurg'a" chizig'i
+            dy_text = (th / 2 + 0.06) if not (b.y > spine_y) else (th / 2 + 0.06)
+            text_right = fx - 0.1 - abs(dy_text) * slope
+            tick_len = tw + 0.18 + abs(dy_text) * slope
+            line(canvas, [(fx - tick_len, fy), (fx, fy)], color=BLUE_DARK, width=SIGNAL_PT * 0.7)
+            plain_text(canvas, (text_right, fy + 0.04), text, size=LABEL_SIZE, ha="right", va="bottom")
+    return canvas
+
+
+# ── Vaqt chizig'i (timeline) ─────────────────────────────
+def draw_timeline_horizontal(data):
+    nodes = data["nodes"]
+    canvas = Canvas()
+    n = len(nodes)
+    step = (MAX_WIDTH_IN - 0.5) / max(1, n - 1) if n > 1 else 1.0
+    max_box = min(2 * step - 0.16, 1.9)
+    blocks = []
+    for wrap_try in (16, 14, 12, 10, 8):
+        blocks = [make_block(node, wrap_try) for node in nodes]
+        if max(b.w for b in blocks) <= max_box:
+            break
+    unify(blocks, width=False)
+    axis_y = 0.0
+    stem = 0.42
+    x0 = 0.25
+    for index, b in enumerate(blocks):
+        up = index % 2 == 0
+        cx = x0 + index * step
+        b.x = cx
+        b.y = axis_y + (stem + b.h / 2) * (1 if up else -1)
+    # Chegaradan chiqmasin
+    left_shift = min(0.0, min(b.x - b.w / 2 for b in blocks))
+    right_over = max(0.0, max(b.x + b.w / 2 for b in blocks) - MAX_WIDTH_IN)
+    wire(canvas, [(min(-0.05, left_shift), axis_y), (MAX_WIDTH_IN + 0.05 + right_over * 0, axis_y)],
+         color=BLACK, width=CONTOUR_PT)
+    date_props = FontProperties(family=FONT, size=LABEL_SIZE, weight="bold")
+    for index, (b, node) in enumerate(zip(blocks, nodes)):
+        up = index % 2 == 0
+        cx = x0 + index * step
+        b.draw(canvas)
+        line(canvas, [(cx, axis_y), b.bottom() if up else b.top()], color=BLUE_DARK, width=SIGNAL_PT)
+        r = 0.055
+        canvas.add(lambda ax, cx=cx: ax.add_patch(Circle((cx, axis_y), r, facecolor=BLACK, edgecolor=BLACK, zorder=7)),
+                   (cx - r, axis_y - r, cx + r, axis_y + r))
+        # Sana — chiziqning qarama-qarshi tomonida
+        plain_text(canvas, (cx, axis_y + (-0.1 if up else 0.1)), mathify(node.get("date", "")), size=LABEL_SIZE,
+                   va="top" if up else "bottom", weight="bold")
+    return canvas
+
+
+def draw_timeline_vertical(data):
+    nodes = data["nodes"]
+    canvas = Canvas()
+    date_props = FontProperties(family=FONT, size=FONT_SIZE, weight="bold")
+    date_w = max(text_size(str(node.get("date", "")), date_props)[0] for node in nodes)
+    axis_x = date_w + 0.25
+    blocks = [make_block(node, 34) for node in nodes]
+    for b in blocks:
+        b.w = max(b.w, 2.6)
+    unify(blocks, height=False)
+    y = 0.0
+    gap = 0.22
+    for b in blocks:
+        b.x = axis_x + 0.45 + b.w / 2
+        b.y = y - b.h / 2
+        y -= b.h + gap
+    top_y = blocks[0].y + blocks[0].h / 2 + 0.1
+    bottom_y = blocks[-1].y - blocks[-1].h / 2 - 0.15
+    wire(canvas, [(axis_x, top_y), (axis_x, bottom_y)], color=BLACK, width=CONTOUR_PT)
+    for b, node in zip(blocks, nodes):
+        b.draw(canvas)
+        line(canvas, [(axis_x, b.y), b.left()], color=BLUE_DARK, width=SIGNAL_PT)
+        r = 0.055
+        canvas.add(lambda ax, yy=b.y: ax.add_patch(Circle((axis_x, yy), r, facecolor=BLACK, edgecolor=BLACK, zorder=7)),
+                   (axis_x - r, b.y - r, axis_x + r, b.y + r))
+        plain_text(canvas, (axis_x - 0.14, b.y), mathify(str(node.get("date", ""))), ha="right", weight="bold")
+    return canvas
+
+
+# ── Siklik jarayon ───────────────────────────────────────
+def draw_cycle_ring(data):
+    nodes = data["nodes"]
+    canvas = Canvas()
+    n = len(nodes)
+    blocks = [make_block(node, 14) for node in nodes]
+    unify(blocks)
+    w, h = blocks[0].w, blocks[0].h
+    # Ellips bo'ylab: keng bloklar uchun gorizontal radius kattaroq
+    rx = max(1.2, (MAX_WIDTH_IN - w) / 2)
+    ry = max(1.0, min(rx * 0.68, (h + 0.55) / (2 * math.sin(math.pi / n)) + 0.35))
+    angles = [math.pi / 2 - 2 * math.pi * i / n for i in range(n)]
+    for b, a in zip(blocks, angles):
+        b.x, b.y = rx * math.cos(a), ry * math.sin(a)
+        b.draw(canvas)
+
+    def inside(b, px, py):
+        return abs(px - b.x) <= b.w / 2 + 0.01 and abs(py - b.y) <= b.h / 2 + 0.01
+
+    for i in range(n):
+        a0, a1 = angles[i], angles[(i + 1) % n]
+        if a1 > a0:
+            a1 -= 2 * math.pi
+        steps = 600
+        pts = [(rx * math.cos(a0 + (a1 - a0) * t / steps), ry * math.sin(a0 + (a1 - a0) * t / steps))
+               for t in range(steps + 1)]
+        src, dst = blocks[i], blocks[(i + 1) % n]
+        pts = [p for p in pts if not inside(src, *p) and not inside(dst, *p)]
+        if len(pts) >= 2:
+            wire(canvas, pts)
+    return canvas
+
+
+def draw_cycle_loop(data):
+    nodes = data["nodes"]
+    canvas = Canvas()
+    n = len(nodes)
+    top_count = math.ceil(n / 2)
+    gap = 0.5
+    blocks = fitted_blocks(nodes, MAX_WIDTH_IN - 0.5, gap, widths=(16, 14, 12, 10))
+    unify(blocks)
+    top = blocks[:top_count]
+    bottom = blocks[top_count:]
+    row_gap = 0.75
+    x = 0.25
+    for b in top:
+        b.x, b.y = x + b.w / 2, 0.0
+        x += b.w + gap
+    # Pastki qator o'ngdan chapga (aylanma yo'nalish)
+    xs = [b.x for b in top]
+    for index, b in enumerate(bottom):
+        b.x = xs[len(xs) - 1 - index] if len(xs) - 1 - index >= 0 else xs[0]
+        b.y = -(top[0].h + row_gap)
+    for b in blocks:
+        b.draw(canvas)
+    for a, c in zip(top, top[1:]):
+        wire(canvas, [a.right(), c.left()])
+    for a, c in zip(bottom, bottom[1:]):
+        wire(canvas, [a.left(), c.right()])
+    last_top = top[-1]
+    lane_r = last_top.x + last_top.w / 2 + 0.25
+    lane_l = min(b.x - b.w / 2 for b in blocks) - 0.25
+    if bottom:
+        first_bottom = bottom[0]
+        if abs(first_bottom.x - last_top.x) < 1e-6:
+            wire(canvas, [last_top.bottom(), first_bottom.top()])
+        else:
+            wire(canvas, [last_top.right(), (lane_r, last_top.y), (lane_r, first_bottom.y), first_bottom.right()])
+        tail = bottom[-1]
+        wire(canvas, [tail.left(), (lane_l, tail.y), (lane_l, top[0].y), top[0].left()])
+    else:
+        wire(canvas, [last_top.bottom(), (last_top.x, -row_gap), (top[0].x, -row_gap), top[0].bottom()])
+    return canvas
+
+
+# ── SWOT matritsasi ──────────────────────────────────────
+def draw_swot(data):
+    w = words(data)
+    canvas = Canvas()
+    side_w = 0.34
+    cell_w = (MAX_WIDTH_IN - side_w) / 2
+    head_h = 0.34
+    groups = {kind: [node for node in data["nodes"] if node.get("kind") == kind]
+              for kind in ("strength", "weakness", "opportunity", "threat")}
+    item_props = FontProperties(family=FONT, size=FONT_SIZE)
+    chars = max(14, int((cell_w - 0.3) / (text_size("o" * 20, item_props)[0] / 20)))
+
+    def lines_for(kind):
+        out = []
+        for node in groups[kind]:
+            wrapped = wrap(node.get("label", ""), chars).split("\n")
+            out.append("– " + wrapped[0])
+            out.extend("   " + rest for rest in wrapped[1:])
+        return out
+
+    texts = {kind: lines_for(kind) for kind in groups}
+    line_h = text_size("Ag", item_props)[1] * 1.3
+    row_h = [max(len(texts["strength"]), len(texts["weakness"])) * line_h + 0.22,
+             max(len(texts["opportunity"]), len(texts["threat"])) * line_h + 0.22]
+    top_head = 0.3
+    x0 = side_w
+    y_top = 0.0
+    layout = [(("strength", "S"), ("weakness", "W")), (("opportunity", "O"), ("threat", "T"))]
+    # Ustun sarlavhalari (ijobiy/salbiy)
+    plain_text(canvas, (x0 + cell_w / 2, y_top + top_head / 2), w["positive"], size=LABEL_SIZE, italic=True)
+    plain_text(canvas, (x0 + cell_w * 1.5, y_top + top_head / 2), w["negative"], size=LABEL_SIZE, italic=True)
+    y = y_top
+    for row_index, row in enumerate(layout):
+        cell_h = head_h + row_h[row_index]
+        for col_index, (kind, letter) in enumerate(row):
+            cx0 = x0 + col_index * cell_w
+            cy0 = y - cell_h
+
+            def op(ax, cx0=cx0, cy0=cy0, cell_h=cell_h):
+                ax.add_patch(Rectangle((cx0, cy0 + cell_h - head_h), cell_w, head_h, facecolor=BLUE_LIGHT,
+                                       edgecolor=BLACK, linewidth=CONTOUR_PT * 0.5, zorder=2))
+                ax.add_patch(Rectangle((cx0, cy0), cell_w, cell_h, facecolor="none", edgecolor=BLACK,
+                                       linewidth=CONTOUR_PT, zorder=3, joinstyle="miter"))
+            canvas.add(op, (cx0, cy0, cx0 + cell_w, y))
+            plain_text(canvas, (cx0 + cell_w / 2, y - head_h / 2), w[letter], weight="bold")
+            plain_text(canvas, (cx0 + 0.12, y - head_h - 0.1), "\n".join(texts[kind]), ha="left", va="top")
+        # Qator yorlig'i (ichki/tashqi) — chapda vertikal
+        plain_text(canvas, (side_w / 2, y - cell_h / 2), w["internal" if row_index == 0 else "external"],
+                   size=LABEL_SIZE, italic=True, rotation=90)
+        y -= cell_h
+    return canvas
+
+
+# ── Avtomatlashtirishning funksional sxemasi (GOST 21.208) ─
+def instrument(canvas, center, tag, number, panel=False, r=0.25):
+    x, y = center
+
+    def op(ax):
+        ax.add_patch(Circle((x, y), r, facecolor=WHITE, edgecolor=BLACK, linewidth=CONTOUR_PT * 0.75, zorder=5))
+        if panel:
+            ax.plot([x - r, x + r], [y, y], color=BLACK, linewidth=CONTOUR_PT * 0.6, zorder=6)
+        ax.text(x, y + r * 0.42, tag, ha="center", va="center", fontsize=LABEL_SIZE - 1, family=FONT, zorder=7)
+        ax.text(x, y - r * 0.45, number, ha="center", va="center", fontsize=LABEL_SIZE - 2, family=FONT, zorder=7)
+    canvas.add(op, (x - r, y - r, x + r, y + r))
+
+
+def valve(canvas, center, size=0.15):
+    x, y = center
+
+    def op(ax):
+        ax.add_patch(Polygon([(x - size, y + size * 0.75), (x - size, y - size * 0.75), (x + size, y + size * 0.75),
+                              (x + size, y - size * 0.75)], closed=True, facecolor=WHITE, edgecolor=BLACK,
+                             linewidth=CONTOUR_PT * 0.75, zorder=5))
+    canvas.add(op, (x - size, y - size, x + size, y + size))
+
+
+def draw_automation(data):
+    w = words(data)
+    nodes = data["nodes"]
+    edges = data["edges"]
+    by_id = {node["id"]: node for node in nodes}
+    kind_of = lambda i: by_id[i].get("kind")
+    canvas = Canvas()
+    equipment_node = next(node for node in nodes if node.get("kind") == "equipment")
+    streams = [node for node in nodes if node.get("kind") == "stream"]
+    inputs = [s for s in streams if any(e["from"] == s["id"] and e["to"] == equipment_node["id"] for e in edges)]
+    outputs = [s for s in streams if s not in inputs]
+    sensors = [node for node in nodes if node.get("kind") == "sensor"]
+    controllers = [node for node in nodes if node.get("kind") == "controller"]
+    actuators = [node for node in nodes if node.get("kind") == "actuator"]
+    number = {node["id"]: f"{index + 1}" for index, node in enumerate(sensors)}
+    for index, node in enumerate(controllers):
+        number[node["id"]] = f"{index + 1}a"
+    for index, node in enumerate(actuators):
+        number[node["id"]] = f"{index + 1}b"
+
+    eq = make_block(equipment_node, 16)
+    eq.fill = BLUE_LIGHT
+    eq.w = max(eq.w, 1.7)
+    eq.h = max(eq.h, 0.95)
+    pipe_len = 1.55
+    left_x = 0.0
+    eq.x = left_x + pipe_len + eq.w / 2
+    eq.y = 0.0
+    # Quvurlar: kirishlar chapdan, chiqishlar o'ngga
+    def pipe_ys(count):
+        if count <= 1:
+            return [0.0]
+        return [eq.h / 4, -eq.h / 4]
+    stream_pos = {}
+    for s, py in zip(inputs, pipe_ys(len(inputs))):
+        start = (left_x, py)
+        wire(canvas, [start, (eq.x - eq.w / 2, py)], color=BLACK, width=CONTOUR_PT)
+        plain_text(canvas, (left_x, py + 0.06), wrap(s.get("label", ""), 16), size=LABEL_SIZE, ha="left", va="bottom", italic=True)
+        stream_pos[s["id"]] = ("in", py, left_x + 0.25, eq.x - eq.w / 2)
+    right_end = eq.x + eq.w / 2 + pipe_len
+    for s, py in zip(outputs, pipe_ys(len(outputs))):
+        wire(canvas, [(eq.x + eq.w / 2, py), (right_end, py)], color=BLACK, width=CONTOUR_PT)
+        plain_text(canvas, (right_end, py + 0.06), wrap(s.get("label", ""), 16), size=LABEL_SIZE, ha="right", va="bottom", italic=True)
+        stream_pos[s["id"]] = ("out", py, eq.x + eq.w / 2 + 0.25, right_end - 0.25)
+    eq.draw(canvas)
+
+    # Klapanlar (bajaruvchi mexanizm) — o'z quvurining o'rtasida
+    actuator_pos = {}
+    for act in actuators:
+        target = next((e["to"] for e in edges if e["from"] == act["id"] and kind_of(e["to"]) == "stream"), None)
+        side, py, a, b = stream_pos.get(target, ("in", 0.0, left_x + 0.25, eq.x - eq.w / 2))
+        vx = (a + b) / 2 + (0.15 if side == "in" else -0.15)
+        valve(canvas, (vx, py))
+        stem_top = py + 0.55
+        line(canvas, [(vx, py + 0.11), (vx, stem_top - 0.25)], width=CONTOUR_PT * 0.6)
+        instrument(canvas, (vx, stem_top), act.get("tag", "FV"), number[act["id"]])
+        actuator_pos[act["id"]] = (vx, stem_top + 0.25)
+
+    # Datchiklar — o'lchanadigan joy ostida
+    panel_top = -eq.h / 2 - 1.25
+    sensor_pos = {}
+    on_eq = [s for s in sensors if any(e["to"] == s["id"] and kind_of(e["from"]) == "equipment" for e in edges)]
+    on_pipe = [s for s in sensors if s not in on_eq]
+    for index, s in enumerate(on_eq):
+        sx = eq.x - eq.w / 2 + eq.w * (index + 1) / (len(on_eq) + 1)
+        sy = -eq.h / 2 - 0.55
+        line(canvas, [(sx, -eq.h / 2), (sx, sy + 0.25)], width=CONTOUR_PT * 0.6)
+        dot(canvas, (sx, -eq.h / 2))
+        instrument(canvas, (sx, sy), s.get("tag", "TE"), number[s["id"]])
+        sensor_pos[s["id"]] = (sx, sy)
+    for index, s in enumerate(on_pipe):
+        src = next((e["from"] for e in edges if e["to"] == s["id"]), None)
+        side, py, a, b = stream_pos.get(src, ("in", 0.0, left_x + 0.25, eq.x - eq.w / 2))
+        sx = a + 0.1 + index * 0.6 if side == "in" else b - 0.1 - index * 0.6
+        sy = min(py, 0.0) - eq.h / 2 - 0.55
+        line(canvas, [(sx, py), (sx, sy + 0.25)], width=CONTOUR_PT * 0.6)
+        dot(canvas, (sx, py))
+        instrument(canvas, (sx, sy), s.get("tag", "PT"), number[s["id"]])
+        sensor_pos[s["id"]] = (sx, sy)
+
+    # Boshqaruv shiti tasmasi
+    band_h = 0.85
+    band_x0 = -0.95
+    band_x1 = max(right_end, eq.x + eq.w / 2 + 0.6) + 0.1
+    band_y0 = panel_top - band_h
+
+    def band(ax):
+        ax.add_patch(Rectangle((band_x0, band_y0), band_x1 - band_x0, band_h, facecolor="none", edgecolor=BLACK,
+                               linewidth=CONTOUR_PT * 0.75, zorder=2))
+        ax.plot([band_x0 + 0.85, band_x0 + 0.85], [band_y0, panel_top], color=BLACK, linewidth=CONTOUR_PT * 0.75, zorder=2)
+    canvas.add(band, (band_x0, band_y0, band_x1, panel_top))
+    plain_text(canvas, (band_x0 + 0.425, band_y0 + band_h / 2), w["panel"], size=LABEL_SIZE - 1)
+    controller_pos = {}
+    used_x = []
+    for c in controllers:
+        feeding = [sensor_pos[e["from"]][0] for e in edges if e["to"] == c["id"] and e["from"] in sensor_pos]
+        cx = sum(feeding) / len(feeding) if feeding else (band_x0 + band_x1) / 2
+        while any(abs(cx - u) < 0.65 for u in used_x):
+            cx += 0.7
+        used_x.append(cx)
+        cy = band_y0 + band_h / 2
+        instrument(canvas, (cx, cy), c.get("tag", "TIC"), number[c["id"]], panel=True)
+        controller_pos[c["id"]] = (cx, cy)
+    # Signal chiziqlari (to'q ko'k)
+    lane = band_x0 - 0.22
+    lane_used = 0
+    for e in edges:
+        f, t = e["from"], e["to"]
+        if f in sensor_pos and t in controller_pos:
+            sx, sy = sensor_pos[f]
+            cx, cy = controller_pos[t]
+            low = min(p[1] for p in sensor_pos.values())
+            mid = (low - 0.25 + cy + 0.25) / 2
+            pts = [(sx, sy - 0.25)] + ([(sx, mid), (cx, mid)] if abs(sx - cx) > 1e-6 else []) + [(cx, cy + 0.25)]
+            wire(canvas, pts)
+            feeders = [sensor_pos[e2["from"]][0] for e2 in edges if e2["to"] == t and e2["from"] in sensor_pos]
+            if len(feeders) > 1 and min(feeders) < cx < max(feeders):
+                dot(canvas, (cx, mid))
+        elif f in controller_pos and t in controller_pos:
+            (ax_, ay), (bx, by) = controller_pos[f], controller_pos[t]
+            wire(canvas, [(ax_ + 0.25, ay), (bx - 0.25, by)] if bx > ax_ else [(ax_ - 0.25, ay), (bx + 0.25, by)])
+        elif f in controller_pos and t in actuator_pos:
+            cx, cy = controller_pos[f]
+            vx, vtop = actuator_pos[t]
+            lx = lane - 0.18 * lane_used
+            lane_used += 1
+            over = vtop + 0.25 + 0.12 * lane_used
+            wire(canvas, [(cx, cy - 0.25), (cx, band_y0 - 0.18), (lx, band_y0 - 0.18), (lx, over), (vx, over), (vx, vtop)])
+    return canvas
+
+
 def build(data):
     diagram_type = data.get("diagram_type")
     if diagram_type == "pid_control_system":
@@ -561,6 +1163,19 @@ def build(data):
         return draw_chain(data)
     if diagram_type == "process_sequence":
         return draw_chain(data)
+    variant = str(data.get("variant") or "")
+    if diagram_type == "classification_tree":
+        return draw_classification_horizontal(data) if variant == "horizontal" else draw_classification_vertical(data)
+    if diagram_type == "ishikawa_diagram":
+        return draw_ishikawa(data)
+    if diagram_type == "timeline_diagram":
+        return draw_timeline_vertical(data) if variant == "vertical" else draw_timeline_horizontal(data)
+    if diagram_type == "cycle_diagram":
+        return draw_cycle_loop(data) if variant == "loop" else draw_cycle_ring(data)
+    if diagram_type == "swot_matrix":
+        return draw_swot(data)
+    if diagram_type == "automation_scheme":
+        return draw_automation(data)
     raise ValueError(f"unsupported schematic type: {diagram_type}")
 
 

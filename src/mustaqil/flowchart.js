@@ -193,12 +193,20 @@ function runGraphviz(dot, layoutEngine = "dot") {
 const GOST_SCHEMATIC_SCRIPT = path.join(__dirname, "gost-schematic.py");
 const SCHEMATIC_DPI = 300;
 let schematicFallbackReported = false;
+// Har safar bir xil ko'rinmasligi uchun joylashuv varianti tasodifiy tanlanadi
+const LAYOUT_VARIANTS = {
+  classification_tree: ["vertical", "horizontal"],
+  timeline_diagram: ["horizontal", "vertical"],
+  cycle_diagram: ["ring", "loop"],
+};
 
 async function renderGostSchematic(input) {
   const { runMatplotlib } = require("./matplotlib");
   const template = getFlowchartTemplate(input?.template_id || input?.diagram_type);
   const normalized = normalizeFlowchartData(input, { diagramType: template.id });
-  const buf = await runMatplotlib({ ...normalized, diagram_type: template.id }, GOST_SCHEMATIC_SCRIPT);
+  const variants = LAYOUT_VARIANTS[template.id] || [""];
+  const variant = variants.includes(input?.variant) ? input.variant : variants[Math.floor(Math.random() * variants.length)];
+  const buf = await runMatplotlib({ ...normalized, diagram_type: template.id, language: input?.language || "", variant }, GOST_SCHEMATIC_SCRIPT);
   const metadata = await sharp(buf).metadata();
   if (metadata.format !== "png" || !metadata.width || !metadata.height) {
     throw new Error("flowchart: GOST sxema yaroqli PNG qaytarmadi");

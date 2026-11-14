@@ -152,6 +152,15 @@ function mediaResponse(userPrompt, attempts) {
         edges: [["control", "service", "calls"], ["service", "database", "reads"]],
       },
     };
+    const templateExample = require("../src/mustaqil/flowchart-templates").getFlowchartTemplate(diagramType).example;
+    if (!examples[diagramType] && templateExample) {
+      return {
+        slot_id: slotId, type: "flowchart", diagram_type: diagramType,
+        title: "Avtomatik boshqaruv tizimining tarkibi", caption: "Izoh: tizim elementlari va ularning o'zaro aloqasi ko'rsatilgan.",
+        nodes: templateExample.nodes.map((node, index) => ({ ...node, label: `Element ${index + 1}` })),
+        edges: templateExample.edges,
+      };
+    }
     const selected = examples[diagramType] || examples.functional_block_diagram;
     return {
       slot_id: slotId, type: "flowchart", diagram_type: diagramType,
@@ -203,6 +212,7 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
 
   try {
     const result = await generateMustaqilIsh({
+      random: () => 0,
       topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile, formulaCount: 2,
       llm: { provider: "openai", openaiKey: "mock-key", openaiModel: "mock-model" },
       onProgress: update => progressUpdates.push(update),
@@ -230,7 +240,7 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
       "yakuniy hujjatdagi media nomlari va captionlarida sun'iy ma'lumot disclosure'i bo'lmasin");
     assert.match(documentXml, /1-formula\. Tizim modeli/);
     assert.match(documentXml, /2-formula\. O(?:&apos;|')tkinchi javob/);
-    assert.match(documentXml, /\d+-rasm\. Izoh:/, "Graphviz sarlavhasi rasm ichidan olib tashlansa ham DOCX captioni saqlansin");
+    assert.match(documentXml, /\d+-rasm\. (?!Izoh)[A-Za-z]/, "rasm ostida sxema nomi (sarlavha) saqlansin");
     const bibliographyStart = documentXml.lastIndexOf("Foydalanilgan adabiyotlar");
     assert.notEqual(bibliographyStart, -1, "bibliografiya bo'limi DOCX ichida mavjud");
     const bibliographyXml = documentXml.slice(bibliographyStart);
@@ -264,7 +274,7 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
     const flowchartRequests = slotRequests.filter(prompt => prompt.includes('"type":"flowchart"'));
     assert.equal(flowchartRequests.length, 2, "har bir rejalashtirilgan Graphviz sloti alohida prompt oladi");
     const selectedTypes = flowchartRequests.map(prompt => prompt.match(/Tanlangan va o‘zgarmas diagram_type: ([A-Za-z0-9_]+)/)?.[1]);
-    assert.ok(selectedTypes.every(type => ["functional_block_diagram", "algorithm_flowchart", "pid_control_system", "uml_software_architecture", "process_sequence"].includes(type)), "har bir Graphviz promptida mavzuga mos semantic diagram_type ko'rsatiladi");
+    assert.ok(selectedTypes.every(type => require("../src/mustaqil/flowchart-templates").FLOWCHART_TEMPLATE_BY_ID.has(type)), "har bir Graphviz promptida mavzuga mos semantic diagram_type ko'rsatiladi");
     assert.ok(flowchartRequests.every(prompt => /Avtomatik boshqaruv tizimlari/.test(prompt) && /bob|Reja:/i.test(prompt)), "Graphviz so'rovlari hujjat mavzusi va bob rejasi bilan boyitiladi");
     assert.equal(new Set(slotRequests.map(prompt => prompt.match(/Slot ID: ([^\s.]+)/)?.[1])).size, 7, "6 ta media + 1 taqqoslash jadvali");
     assert.equal(mediaAttempts.get("ch1:formula:1"), 2, "yaroqsiz LaTeX rejaga mos kelmagani uchun aynan shu slot qayta olinadi");
@@ -302,6 +312,7 @@ test("Graphviz renderlari yiqilsa ham pipeline qolgan media bilan DOCX tayyorlay
 
   try {
     const result = await generateMustaqilIsh({
+      random: () => 0,
       topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile, formulaCount: 2,
       llm: { provider: "openai", openaiKey: "mock-key", openaiModel: "mock-model" },
     });

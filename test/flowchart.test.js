@@ -58,7 +58,7 @@ test("Graphviz oqim sxemasi xavfsiz JSON sxemasi va DOT string escaping bilan tu
 });
 
 test("beshta Graphviz semantik turi to‘g‘ri shakl va yo‘nalishda yaroqli PNG render beradi", () => {
-  assert.equal(FLOWCHART_TEMPLATES.length, 5);
+  assert.equal(FLOWCHART_TEMPLATES.length, 11);
   assert.equal(new Set(FLOWCHART_TEMPLATES.map(template => template.id)).size, FLOWCHART_TEMPLATES.length);
   assert.ok(FLOWCHART_TEMPLATES.every(template => template.name && template.description && template.direction && template.topologyGuidance));
   const examples = {
@@ -85,8 +85,10 @@ test("beshta Graphviz semantik turi to‘g‘ri shakl va yo‘nalishda yaroqli P
     },
   };
   const byId = Object.fromEntries(FLOWCHART_TEMPLATES.map(template => [template.id, template]));
-  const dots = FLOWCHART_TEMPLATES.map(template => buildFlowchartDot({ ...examples[template.id], diagram_type: template.id }));
-  for (const [index, template] of FLOWCHART_TEMPLATES.entries()) {
+  const classic = FLOWCHART_TEMPLATES.filter(template => examples[template.id]);
+  assert.equal(classic.length, 5);
+  const dots = classic.map(template => buildFlowchartDot({ ...examples[template.id], diagram_type: template.id }));
+  for (const [index, template] of classic.entries()) {
     const dot = dots[index];
     assert.match(dot, /fontname="DejaVu Sans"/, `${template.id}: GOST chizma qoidasi — matn DejaVu Sans`);
     assert.match(dot, /color="#1f5fa6"/, `${template.id}: oqim strelkalari to'q ko'k #1f5fa6`);
@@ -241,7 +243,7 @@ test("outline va bob promptlari Graphviz flowchartni JSON media sifatida so'rayd
     language: "o'zbek", chapterIndex: 0, totalChapters: 1,
   });
   assert.match(prompt, /Graphviz diagramma rejasi/);
-  assert.match(prompt, /Umumiy limit 2–5 tugun/);
+  assert.match(prompt, /Cheklovlar: 2–5 tugun/);
   assert.match(prompt, /process_sequence/);
   assert.match(prompt, /mavzu, bob va reja maqsadiga bevosita mos/);
   assert.match(prompt, /jarayon qadamlarini chapdan o‘ngga/);
@@ -446,4 +448,55 @@ test("tarakan nazorati fallbackida o‘zbekcha Tarakan, Risk va IPM terminlari i
   assert.equal(validatePlannedMedia([{ content: [fallback] }], [planned], {
     language: "o'zbek", minimumDiagramCount: 0,
   }), true);
+});
+
+test("yangi oltita sxema turi namunasi tekshiruvdan o'tadi va GOST/Graphviz bilan chiziladi", async () => {
+  const { renderGostSchematic } = require("../src/mustaqil/flowchart");
+  const python = spawnSync("python3", ["-c", "import matplotlib"]);
+  for (const id of ["classification_tree", "ishikawa_diagram", "timeline_diagram", "cycle_diagram", "swot_matrix", "automation_scheme"]) {
+    const template = FLOWCHART_TEMPLATES.find(item => item.id === id);
+    assert.ok(template?.example, `${id}: namuna bo'lsin`);
+    const data = JSON.parse(JSON.stringify(template.example));
+    data.nodes.forEach((node, index) => { node.label = `Yorliq ${index + 1}`; });
+    const input = { title: "Sinov", diagram_type: id, ...data };
+    assert.doesNotThrow(() => normalizeFlowchartData(input, { diagramType: id }), id);
+    const dot = buildFlowchartDot(input);
+    const rendered = spawnSync("dot", [`-K${template.layoutEngine}`, "-Tpng"], { input: dot });
+    assert.equal(rendered.status, 0, `${id}: Graphviz zaxira`);
+    if (python.status === 0) {
+      const image = await renderGostSchematic({ ...input, language: "o'zbek" });
+      assert.ok(image.width > 50 && image.width <= 595 && image.height <= 760, `${id}: o'lcham ${image.width}x${image.height}`);
+    }
+  }
+  assert.throws(() => normalizeFlowchartData({ title: "T", diagram_type: "automation_scheme", nodes: [
+    { id: "in", label: "Gaz", kind: "stream" }, { id: "eq", label: "Pech", kind: "equipment" },
+    { id: "te", label: "Datchik", kind: "sensor" }, { id: "tic", label: "Rostlagich", kind: "controller", tag: "TIC" }],
+    edges: [{ from: "in", to: "eq" }, { from: "eq", to: "te" }, { from: "te", to: "tic" }] }, { diagramType: "automation_scheme" }), /tag/);
+  assert.throws(() => normalizeFlowchartData({ title: "T", diagram_type: "cycle_diagram", nodes: [
+    { id: "a", label: "A", kind: "stage" }, { id: "b", label: "B", kind: "stage" }, { id: "c", label: "C", kind: "stage" }],
+    edges: [{ from: "a", to: "b" }, { from: "b", to: "c" }, { from: "c", to: "b" }] }, { diagramType: "cycle_diagram" }), /sikl/);
+});
+
+test("beshta yangi GOST grafik turi normallashadi va chiziladi", async () => {
+  const { normalizeChartData } = require("../src/mustaqil/chart-data");
+  const { renderChart } = require("../src/mustaqil/chart");
+  const python = spawnSync("python3", ["-c", "import matplotlib"]);
+  const cases = [
+    { diagram_type: "scatter_trend", points: [[1, 2], [2, 4.1], [3, 5.9], [4, 8.2], [5, 9.9]], fit: "linear", x_label: "x", y_label: "y" },
+    { diagram_type: "stacked_bar", labels: ["2023", "2024"], series: [{ name: "A", values: [1, 2] }, { name: "B", values: [3, 1] }] },
+    { diagram_type: "horizontal_bar", labels: ["A", "B", "C"], values: [3, 1, 2] },
+    { diagram_type: "dual_axis", labels: ["Y", "F", "M"], left: { name: "Hajm", unit: "t", values: [1, 2, 3] }, right: { name: "Sarf", unit: "m³/t", values: [5, 4, 3] } },
+    { diagram_type: "histogram", bin_edges: [0, 1, 2, 3, 4], counts: [1, 4, 3, 1] },
+  ];
+  for (const chart of cases) {
+    const normalized = normalizeChartData(chart);
+    assert.equal(normalized.diagram_type, chart.diagram_type);
+    if (python.status === 0) {
+      const image = await renderChart(chart);
+      assert.ok(image.buf.length > 1000 && image.width === 595, chart.diagram_type);
+    }
+  }
+  assert.throws(() => normalizeChartData({ diagram_type: "histogram", bin_edges: [0, 2, 1, 3, 4], counts: [1, 2, 3, 4] }), /o'suvchi/);
+  assert.throws(() => normalizeChartData({ diagram_type: "stacked_bar", labels: ["A", "B"], series: [{ name: "A", values: [-1, 2] }, { name: "B", values: [1, 1] }] }), /manfiy/);
+  assert.throws(() => normalizeChartData({ diagram_type: "dual_axis", labels: ["A", "B", "C"], left: { name: "X", values: [1, 2, 3] }, right: { name: "X", values: [1, 2, 3] } }), /turli/);
 });

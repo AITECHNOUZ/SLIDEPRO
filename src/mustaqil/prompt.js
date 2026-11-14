@@ -108,6 +108,7 @@ function defaultFlowchartPlan(topic, ordinal, language = "o'zbek", chapterTitle 
     };
   }
   plan.diagram_type = classifyGraphvizType({ topic: subject, chapterTitle, planTitle: plan.title, purpose: plan.purpose });
+  plan.auto_type = true; // avtomatik taxmin — media bosqichida xilma-xillik uchun boshqa mos tur tanlanishi mumkin
   plan.caption = buildFlowchartCaption(plan, plan.purpose, language);
   return plan;
 }
@@ -154,6 +155,7 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     flowchartAssignments.set(index, {
       ...selectedPlan,
       diagram_type: selectedPlan.diagram_type || classifyGraphvizType({ topic, chapterTitle: chapter.title, planTitle: selectedPlan.title, purpose: selectedPlan.purpose }),
+      ...(selectedPlan.diagram_type && !selectedPlan.auto_type ? {} : { auto_type: true }),
       caption: selectedPlan.caption || buildFlowchartCaption(selectedPlan, selectedPlan.purpose, language),
     });
   });
@@ -185,6 +187,7 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     existing.push({
       ...selectedPlan,
       diagram_type: selectedPlan.diagram_type || classifyGraphvizType({ topic, chapterTitle: chapter.title, planTitle: selectedPlan.title, purpose: selectedPlan.purpose }),
+      ...(selectedPlan.diagram_type && !selectedPlan.auto_type ? {} : { auto_type: true }),
       caption: selectedPlan.caption || buildFlowchartCaption(selectedPlan, selectedPlan.purpose, language),
     });
     flowchartTotal++;
@@ -456,7 +459,7 @@ JSON strukturasida qaytargin:
       ],
       "flowchart_count": <0, 1 yoki 2>,
       "flowchart_plans": [
-        {"diagram_type": "<functional_block_diagram|algorithm_flowchart|pid_control_system|uml_software_architecture|process_sequence>", "title": "<mazmunga mos sarlavha>", "purpose": "<sxema nimani tushuntiradi>", "caption": "<sxema haqida qisqa o'zbekcha izoh>"}
+        {"diagram_type": "<functional_block_diagram|algorithm_flowchart|pid_control_system|uml_software_architecture|process_sequence|classification_tree|ishikawa_diagram|timeline_diagram|cycle_diagram|swot_matrix|automation_scheme>", "title": "<mazmunga mos sarlavha>", "purpose": "<sxema nimani tushuntiradi>", "caption": "<sxema haqida qisqa o'zbekcha izoh>"}
       ],
       "table_count": <0 yoki 1>,
       "sections": [
@@ -497,7 +500,7 @@ TUZILMA QOIDALARI:
 - Mavzuning matematik/miqdoriy darajasi bo'yicha butun ishga aynan ${requestedFormulas} ta formula, ${chartQuotaText} miqdoriy grafik, aynan ${requestedFlowcharts} ta blok-sxema (GOST 19.701) va ko'pi bilan 1 jadval rejalashtir; har bir asosiy bo'limga har bir turdan ko'pi bilan 2 ta ber va media boblarga teng taqsimlansin. Formula sonini ushbu kvotaga mos to'liq rejalashtir, kamaytirma va tavsifiy mavzuga filler formula qo'shma.
 - Miqdoriy grafiklar va blok-sxemalarning jami kamida ${MIN_DIAGRAM_COUNT} ta bo'lsin; bu uchta bilan cheklanadigan yuqori limit emas — mavzu va sahifa rejasi imkon bersa, undan ko'proq diagramma rejalashtir va chiqar.
 - Media barcha asosiy bo'limlarga teng taqsimlansin; Kirish va Xulosada media ishlatma.
-- Jami aynan ${requestedFlowcharts} ta blok-sxema rejalashtir, sxemalar turi bir-biridan farq qilsin; har biriga mavzu va bo'lim mazmuniga mos diagram_type ber: functional_block_diagram, algorithm_flowchart, pid_control_system, uml_software_architecture yoki process_sequence. Algoritm bo'lsa standart start/end/qaror belgilarini, PID bo'lsa yopiq teskari aloqani, UML bo'lsa haqiqiy komponent/klass munosabatlarini, jarayon ketma-ketligi bo'lsa chapdan o'ngga qadamlarni tanla; boshqa mavzuga mos bo'lmagan tur yoki generic chizma qo'llama. Har bir sxemada ko'pi bilan 5 ta tugun bo'lsin; Kirish va Xulosada sxema bo'lmasin.
+- Jami aynan ${requestedFlowcharts} ta blok-sxema rejalashtir, sxemalar turi bir-biridan farq qilsin; har biriga mavzu va bo'lim mazmuniga mos diagram_type ber: functional_block_diagram, algorithm_flowchart, pid_control_system, uml_software_architecture, process_sequence, classification_tree (tasnif daraxti), ishikawa_diagram (sabab-oqibat "baliq skeleti"), timeline_diagram (tarixiy bosqichlar, sanalar bilan), cycle_diagram (yopiq siklik jarayon), swot_matrix (SWOT tahlil) yoki automation_scheme (GOST 21.208 avtomatlashtirish funksional sxemasi — faqat texnologik obyekt boshqaruvi uchun). Algoritm bo'lsa start/end/qaror belgilarini, PID bo'lsa yopiq teskari aloqani, UML bo'lsa komponent/klass munosabatlarini, tasnif bo'lsa turlar ierarxiyasini, tarix bo'lsa sanali voqealarni tanla; mavzuga mos bo'lmagan tur yoki generic chizma qo'llama, bir xil turni takrorlama. Tugunlar soni tur cheklovidan oshmasin; Kirish va Xulosada sxema bo'lmasin.
 - Har asosiy bo'lim BOSHQA JIHATNI yoritsin: nazariy / amaliy / taqqoslov / prognoz
 - Sarlavhalarga strukturaviy yorliq yoki raqam prefiksi yozma — dastur raqamlarni o'zi qo'shadi.
 - Asosiy va ichki sarlavhalar lo'nda, faqat mazmunni ifodalovchi bo'lsin (odatda 3–10 so'z); kirish so'zlari, takroriy mavzu nomi va izohlarni sarlavhaga qo'shma.
@@ -731,11 +734,13 @@ function chapterUserPrompt(options) {
       ? "PID uchun aynan 5 tugun va yopiq kontur: input → sum → controller → plant → sensor → sum. Sensorning teskari aloqasini aniq chiz."
       : flowchartType === "uml_software_architecture"
         ? "Faqat mavzudagi haqiqiy software component/class/interface/database/actor elementlari va UML munosabatlarini ishlat; dasturiy arxitektura bo‘lmagan mavzuda UML to‘qima."
+        : ["classification_tree", "ishikawa_diagram", "timeline_diagram", "cycle_diagram", "swot_matrix", "automation_scheme"].includes(flowchartType)
+          ? `Namuna tuzilma (faqat shakl, mazmunni mavzudan ol): ${JSON.stringify(flowchartTemplate.example || {})}.`
         : flowchartType === "process_sequence"
           ? "Haqiqiy jarayon qadamlarini chapdan o‘ngga bajarilish/vaqt tartibida joyla; start/end/decision faqat bu aynan algoritm bo‘lsa ishlatiladi."
           : "Haqiqiy funksional kirish, qayta ishlash bloklari va chiqishni chapdan o‘ngga ko‘rsat; algoritm yoki boshqaruv konturi bo‘lmagan mavzuga shartli belgilar to‘qima.";
   const flowchartGuide = chapter.flowchart_count > 0
-    ? `\nGraphviz diagramma rejasi: "${flowchartPlan?.title || chapter.title}" — ${flowchartPlan?.purpose || "bo‘lim mazmuniga mos aniq tizim yoki jarayon"}. Tanlangan o‘zgarmas tur: ${flowchartTemplate.id} (${flowchartTemplate.name}); yo‘nalish: ${flowchartTemplate.direction}. ${flowchartTemplate.topologyGuidance} ${flowchartSpecificGuide} Umumiy limit 2–5 tugun (PID aynan 5); barcha tugun, qirra va izoh mavzu, bob va reja maqsadiga bevosita mos bo‘lsin; generic yoki mavzuga aloqasiz to‘ldiruvchilarni ishlatma. Faqat ${flowchartTemplate.allowedKinds.join(", ")} kind qiymatlaridan tanla. Har tugun yorlig‘i 1–5 qisqa so‘z; qirralar 1–7 ta, tugunlar bog‘langan bo‘lsin. JSON ichida diagram_type="${flowchartTemplate.id}" yoz; matnni mavzuga mos o‘zbekcha/inglizcha ber. O‘zbekcha captionni "Izoh:" bilan yozib, mazmuniy aloqalarni 1–2 jumlada izohla. Graphviz DOT yoki kodni JSONga kiritma.`
+    ? `\nGraphviz diagramma rejasi: "${flowchartPlan?.title || chapter.title}" — ${flowchartPlan?.purpose || "bo‘lim mazmuniga mos aniq tizim yoki jarayon"}. Tanlangan o‘zgarmas tur: ${flowchartTemplate.id} (${flowchartTemplate.name}); yo‘nalish: ${flowchartTemplate.direction}. ${flowchartTemplate.topologyGuidance} ${flowchartSpecificGuide} Cheklovlar: ${flowchartTemplate.limitsText || "2–5 tugun"}; barcha tugun, qirra va izoh mavzu, bob va reja maqsadiga bevosita mos bo‘lsin; generic yoki mavzuga aloqasiz to‘ldiruvchilarni ishlatma. Faqat ${flowchartTemplate.allowedKinds.join(", ")} kind qiymatlaridan tanla. Har tugun yorlig‘i 1–${flowchartTemplate.limits?.maxLabelWords || 5} qisqa so‘z. JSON ichida diagram_type="${flowchartTemplate.id}" yoz; matnni mavzuga mos o‘zbekcha/inglizcha ber. O‘zbekcha captionni "Izoh:" bilan yozib, mazmuniy aloqalarni 1–2 jumlada izohla. Graphviz DOT yoki kodni JSONga kiritma.`
     : "";
 
   // Chapter type instructions
@@ -846,7 +851,7 @@ CONTENT BLOKLARI:
    - Manba aniq berilmagan bo'lsa, manba nomini uydirma qilma; sarlavha/captionda sintetik, AI yoki real emas kabi status yorliqlarini yozma.
 
 6. Rejalashtirilgan Graphviz sxemasi (flowchart_count > 0): alohida media slot prompti bu mazmunni JSONga aylantiradi; Graphviz DOT hech qachon qaytarma.
-   - diagram_type faqat functional_block_diagram, algorithm_flowchart, pid_control_system, uml_software_architecture yoki process_sequence bo‘lsin.
+   - diagram_type faqat functional_block_diagram, algorithm_flowchart, pid_control_system, uml_software_architecture, process_sequence, classification_tree, ishikawa_diagram, timeline_diagram, cycle_diagram, swot_matrix, automation_scheme qiymatlaridan biri bo‘lsin.
    - Ko‘pi bilan 5 tugun (umumiy 2–5; algoritm 3–5; PID aynan 5); har bir label qisqa va mavzuga xos. Standart shakllarni semantik turga mos ishlat; algoritmga ruxsat berilgan, lekin boshqa sxemaga algoritm belgilari qo‘shma.
    - Barcha qirralar mazmuniy aloqani ko‘rsatsin; jarayon ketma-ketligi chapdan o‘ngga, algoritm yuqoridan pastga, PID teskari aloqa konturi bilan joylashadi.
    - Bitta rejali sxemani aynan bir marta, asosiy bo'limda qaytar; tugun id'lari lotin harfi bilan boshlansin. Model inglizcha so'z yoki atama qaytarsa, Graphviz ichida aynan o'sha matn qolsin. O'zbekcha captionda butun sxemaga qisqa o'zbekcha izoh bo'lsin; har bir atamaning tarjimasi talab qilinmaydi.
