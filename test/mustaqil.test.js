@@ -141,14 +141,14 @@ test("outline normalization exact structure yaratadi va legitimate adabiyot topi
   for (const chapter of main) {
     assert.equal(new Set(chapter.sections.map(section => section.title.toLowerCase())).size, chapter.sections.length);
     assert.ok(chapter.sections.every(section => section.word_target === 398));
-    assert.ok(chapter.chart_count === 0 || chapter.chart_count === 1);
+    assert.ok(chapter.chart_count >= 0 && chapter.chart_count <= 2, "bitta bobda ko'pi bilan 2 ta grafik");
     assert.equal(chapter.chart_count, chapter.chart_plans.length);
-    assert.ok(chapter.formula_count === 0 || chapter.formula_count === 1);
+    assert.ok(chapter.formula_count >= 0 && chapter.formula_count <= 2, "bitta bobda ko'pi bilan 2 ta formula");
   }
   assert.equal(main.reduce((sum, chapter) => sum + chapter.chart_count, 0), 2);
   assert.ok(main.filter(chapter => chapter.chart_count > 0).length <= 2);
   assert.equal(main.reduce((sum, chapter) => sum + chapter.formula_count, 0), 2);
-  assert.ok(main.every(chapter => chapter.formula_count <= 1));
+  assert.ok(main.every(chapter => chapter.formula_count <= 1), "2 ta formula 3 ta bobga teng taqsimlanadi");
   assert.equal(main.reduce((sum, chapter) => sum + chapter.table_count, 0), 1);
   assert.equal(outline.meta.student_name, "Talaba");
   assert.equal(outline.meta.title, "Sinov mavzusi");
@@ -158,13 +158,13 @@ test("outline normalization exact structure yaratadi va legitimate adabiyot topi
 test("formula kvotasi mavzuning miqdoriy xususiyatiga mos, override esa ustuvor", () => {
   const chapterLimit = pagePlan(16).mainChapterCount;
   assert.equal(chapterLimit, 4);
-  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Avtomatik boshqaruv tizimlari" }), 2);
-  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Математическое моделирование физических систем" }), 2);
+  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Avtomatik boshqaruv tizimlari" }), 4);
+  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Математическое моделирование физических систем" }), 4);
   assert.equal(resolveFormulaQuota(chapterLimit, { topic: "O'zbek adabiyotida realizm" }), 0);
-  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Iqtisodiy o'sish va statistik tahlil" }), 2);
-  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Quantum error correction in hybrid computing" }), 2,
+  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Iqtisodiy o'sish va statistik tahlil" }), 4);
+  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Quantum error correction in hybrid computing" }), 4,
     "kvant hisoblash mavzusi eski tor kalit so'zlar ro'yxatisiz ham miqdoriy deb topilsin");
-  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Raqamli filologiyada korpus va sentiment tahlili" }), 2,
+  assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Raqamli filologiyada korpus va sentiment tahlili" }), 4,
     "aralash gumanitar-hisoblash mavzusi hisoblash usullari aniq bo'lganda tanilsin");
   assert.equal(resolveFormulaQuota(chapterLimit, { topic: "Markaziy Osiyo she'riyatidagi qiyosiy obrazlar" }), 0,
     "miqdoriy dalilsiz tavsifiy mavzuga filler formula qo'shilmasin");
@@ -179,9 +179,9 @@ test("formula kvotasi mavzuning miqdoriy xususiyatiga mos, override esa ustuvor"
     { title: "Tahlil" }, { title: "Natijalar" }, { title: "Qo'llanish" },
   ] }, { pages: 16, topic: "Avtomatik boshqaruv tizimlari" });
   const main = planned.chapters.filter(chapter => chapter.id !== "intro" && chapter.id !== "conclusion");
-  assert.equal(main.reduce((sum, chapter) => sum + chapter.formula_count, 0), 2,
-    "bir bobga tushib qolgan 2 reja formulasi normallashtirishda yo'qolmasin");
-  assert.deepEqual(main.map(chapter => chapter.formula_count), [1, 1, 0, 0]);
+  assert.equal(main.reduce((sum, chapter) => sum + chapter.formula_count, 0), 4,
+    "16 betlik texnik ishda kamida 4 ta formula: 2 ta reja formulasi + 2 ta konsept-reja");
+  assert.deepEqual(main.map(chapter => chapter.formula_count), [1, 1, 1, 1], "formulalar boblarga teng taqsimlanadi");
   assert.deepEqual(main.slice(0, 2).flatMap(chapter => chapter.formula_plans.map(plan => plan.latex)), [
     "G(s)=\\frac{1}{s+1}", "y(t)=1-e^{-t}",
   ]);
@@ -195,7 +195,7 @@ test("formula kvotasi mavzuning miqdoriy xususiyatiga mos, override esa ustuvor"
   assert.equal(forced.chapters.reduce((sum, chapter) => sum + chapter.formula_count, 0), 2,
     "aniq formula override tavsifiy mavzuda ham avtomatik qisqartirilmasin");
   assert.match(outlineUserPrompt({ topic: "O'zbek adabiyoti", pages: 16 }), /aynan 0 ta formula/);
-  assert.match(outlineUserPrompt({ topic: "Avtomatik boshqaruv tizimlari", pages: 16 }), /aynan 2 ta formula/);
+  assert.match(outlineUserPrompt({ topic: "Avtomatik boshqaruv tizimlari", pages: 16 }), /aynan 4 ta formula/);
 });
 
 test("aniq kvota 4 formula, 2 klassik grafik va 2 flowchartni toza boblarga taqsimlaydi", () => {

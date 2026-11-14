@@ -36,7 +36,7 @@ function buildMediaSlots(chapters = [], { random = Math.random, topic = "" } = {
           plan: plans[index] ?? (type === "formula" && Array.isArray(chapter?.formula_latex)
             ? chapter.formula_latex[index]
             : null),
-          chartType: type === "chart" ? String(chapter?.chart_type || plans[index]?.chartType || "bar").toLowerCase() : undefined,
+          chartType: type === "chart" ? String(plans[index]?.chartType || chapter?.chart_type || "bar").toLowerCase() : undefined,
         };
         slots.push(slot);
         sectionCursor++;
@@ -62,6 +62,10 @@ function buildMediaSlots(chapters = [], { random = Math.random, topic = "" } = {
   flowchartSlots.forEach((slot, index) => {
     const template = templates[index];
     const plan = slot.plan && typeof slot.plan === "object" && !Array.isArray(slot.plan) ? slot.plan : {};
+    // Tanlangan (takrorlanmaydigan) tur asl rejaga ham yoziladi — tekshiruv shu bilan solishtiradi.
+    const chapterPlans = chapters[slot.chapterIndex]?.flowchart_plans;
+    const originalPlan = Array.isArray(chapterPlans) ? chapterPlans[slot.ordinal - 1] : null;
+    if (originalPlan && typeof originalPlan === "object") originalPlan.diagram_type = template.diagramType;
     slot.template_id = template.id;
     slot.template_name = template.name;
     slot.template_description = template.description;
@@ -119,7 +123,7 @@ function mergeMediaSlotsIntoContent(chapter, content, slots, mediaBySlotId, main
       if (!slot || emitted.has(slot.slot_id)) continue;
       const media = mediaBySlotId.get(slot.slot_id);
       if (!media) throw new Error(`Media slot ${slot.slot_id} uchun natija topilmadi`);
-      merged.push(media);
+      if (media.type !== "skip") merged.push(media);
       emitted.add(slot.slot_id);
       continue;
     }
@@ -133,6 +137,7 @@ function mergeMediaSlotsIntoContent(chapter, content, slots, mediaBySlotId, main
     if (emitted.has(slot.slot_id)) continue;
     const media = mediaBySlotId.get(slot.slot_id);
     if (!media) throw new Error(`Media slot ${slot.slot_id} uchun natija topilmadi`);
+    if (media.type === "skip") continue;
     const sectionHeadings = merged
       .map((item, index) => item?.type === "heading" && item.level === 2 ? index : -1)
       .filter(index => index >= 0);

@@ -208,7 +208,7 @@ test("chartCount=0 bo'lsa ham diagrammalar jami kamida uchtaga yetkaziladi", () 
   assert.equal(main.reduce((sum, chapter) => sum + chapter.flowchart_count, 0), 2);
   const prompt = outlineUserPrompt({ topic: "Avtomatik boshqaruv tizimi", pages: 10, chartCount: 0, flowchartCount: 2 });
   assert.match(prompt, /1 miqdoriy grafik/);
-  assert.match(prompt, /2 ta Graphviz oqim sxemasi/);
+  assert.match(prompt, /2 ta blok-sxema/);
   assert.match(prompt, /jami kamida 3 ta/);
 });
 
@@ -227,8 +227,8 @@ test("oddiy ish kamida uchta diagramma oladi, katta ish esa uchdan ko'pini rejal
 });
 
 test("outline va bob promptlari Graphviz flowchartni JSON media sifatida so'raydi", () => {
-  assert.match(outlineUserPrompt({ topic: "Suvni tozalash", pages: 10 }), /Graphviz oqim sxemasi/);
-  assert.match(outlineUserPrompt({ topic: "Boshqaruv", pages: 10, flowchartCount: 2 }), /aynan 2 ta Graphviz oqim sxemasi/);
+  assert.match(outlineUserPrompt({ topic: "Suvni tozalash", pages: 10 }), /blok-sxema \(GOST 19\.701\)/);
+  assert.match(outlineUserPrompt({ topic: "Boshqaruv", pages: 10, flowchartCount: 2 }), /aynan 2 ta blok-sxema/);
   const chapter = {
     id: "ch1", title: "Jarayon bosqichlari", role: "theory", word_target: 398,
     sections: [{ title: "Asosiy bosqichlar", word_target: 398 }],

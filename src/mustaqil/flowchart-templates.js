@@ -114,7 +114,22 @@ function selectFlowchartTemplates(contextsOrCount) {
   const contexts = Array.isArray(contextsOrCount)
     ? contextsOrCount
     : Array.from({ length: Math.max(0, Math.floor(Number(contextsOrCount) || 0)) }, () => ({}));
-  return contexts.map(context => getFlowchartTemplate(classifyGraphvizType(context)));
+  // Bir ishda bir xil sxema turi takrorlanmasin: takror bo'lsa, ishlatilmagan mos turga almashtiriladi.
+  const ALTERNATIVES = ["process_sequence", "algorithm_flowchart", "functional_block_diagram", "pid_control_system", "uml_software_architecture"];
+  const used = new Set();
+  return contexts.map(context => {
+    let type = classifyGraphvizType(context);
+    if (used.has(type)) {
+      const control = /rostla|boshqar|regul|control|pid|avtomat/i.test(`${context.topic || ""} ${context.chapterTitle || ""} ${context.planTitle || ""}`);
+      const software = /dastur|software|tizim arxitektura|server|ma'lumotlar bazasi|database|web|ilova/i.test(`${context.topic || ""} ${context.chapterTitle || ""}`);
+      const alternative = ALTERNATIVES
+        .filter(candidate => (candidate !== "pid_control_system" || control) && (candidate !== "uml_software_architecture" || software))
+        .find(candidate => !used.has(candidate));
+      if (alternative) type = alternative;
+    }
+    used.add(type);
+    return getFlowchartTemplate(type);
+  });
 }
 
 module.exports = {

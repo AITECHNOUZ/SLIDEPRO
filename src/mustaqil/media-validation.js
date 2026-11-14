@@ -52,9 +52,9 @@ function validatePlannedMedia(generatedChapters, plannedChapters, { language, mi
     const expectedTableCount = isMain ? Number(planned.table_count) || 0 : 0;
     const chapterName = planned.title || planned.id || `chapter-${index + 1}`;
 
-    if (expectedFormulaCount > formulaPlans.length) {
-      errors.push(`${chapterName}: ${expectedFormulaCount} ta formula rejalashtirilgan, lekin formula_plans latex yetarli emas`);
-    }
+    // Konsept-reja formulalari (latex bo'sh) media so'rovida yoziladi va yozilmasa tashlab ketiladi:
+    // shuning uchun majburiy son — faqat latex bilan rejalashtirilganlar.
+    const conceptFormulaCount = Math.max(0, expectedFormulaCount - formulaPlans.length);
     if (actualCharts.length !== expectedChartCount) {
       errors.push(`${chapterName}: chart ${actualCharts.length}/${expectedChartCount}`);
     }
@@ -113,14 +113,13 @@ function validatePlannedMedia(generatedChapters, plannedChapters, { language, mi
         errors.push(`${chapterName}: chart ${chartIndex + 1} diagram_type ${chart.diagram_type || "bo'sh"}/${expectedDiagramType}`);
       }
     });
-    if (actualFormulas.length !== expectedFormulaCount) {
+    if (actualFormulas.length < formulaPlans.length || actualFormulas.length > formulaPlans.length + conceptFormulaCount) {
       errors.push(`${chapterName}: formula ${actualFormulas.length}/${expectedFormulaCount}`);
       continue;
     }
     if (formulaPlans.length) {
-      const expected = formulaPlans.map(formulaKey).sort();
-      const actual = actualFormulas.map(item => formulaKey(item.latex)).sort();
-      if (expected.some((formula, i) => formula !== actual[i])) {
+      const actual = new Set(actualFormulas.map(item => formulaKey(item.latex)));
+      if (formulaPlans.map(formulaKey).some(formula => !actual.has(formula))) {
         errors.push(`${chapterName}: rejalashtirilgan formulalar bilan yaratilgan formulalar mos emas`);
       }
     }

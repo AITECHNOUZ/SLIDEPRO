@@ -196,7 +196,7 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
 
   try {
     const result = await generateMustaqilIsh({
-      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile,
+      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile, formulaCount: 2,
       llm: { provider: "openai", openaiKey: "mock-key", openaiModel: "mock-model" },
       onProgress: update => progressUpdates.push(update),
     });
@@ -292,7 +292,7 @@ test("Graphviz renderlari yiqilsa ham pipeline qolgan media bilan DOCX tayyorlay
 
   try {
     const result = await generateMustaqilIsh({
-      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile,
+      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile, formulaCount: 2,
       llm: { provider: "openai", openaiKey: "mock-key", openaiModel: "mock-model" },
     });
     assert.equal(result.title, "Pipeline sinovi");

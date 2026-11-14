@@ -33,7 +33,7 @@ const { buildDocument } = require("./builder");
 const { renumberMedia } = require("./media-numbering");
 const { countWords, chapterMainNumber, normalizeChapterContent, clampChapterContent } = require("./structure");
 const { validatePlannedMedia } = require("./media-validation");
-const { resolveDiagramQuotas, resolveFormulaQuota } = require("./media-requirements");
+const { resolveDiagramQuotas, resolveFormulaQuota, mediaCapacity, MAX_PER_CHAPTER_PER_TYPE } = require("./media-requirements");
 const { buildFlowchartCaption, normalizeFlowchartData, isUzbek, isRussian } = require("./flowchart-data");
 const { normalizeChartData } = require("./chart-data");
 const { normalizeFormulaSource } = require("./formula-data");
@@ -90,7 +90,7 @@ function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
   const chapterContext = chapter?.title ? ` Bob: ${chapter.title}.${chapter.role ? ` Bob vazifasi: ${chapter.role}.` : ""}` : "";
   const common = `Mavzu: ${topic || "Mavzu"}.${chapterContext} Til: ${language || "o'zbek"}. Slot ID: ${slot.slot_id}. Reja: ${planText}.${source}\nFaqat bitta media obyektini tuz. Slot ID va type qiymatlarini aynan saqla; boshqa izoh yoki markdown bermagin. Sarlavha va caption media mazmunini tabiiy, qisqa ifodalasin; ularga meta-ma'lumot yoki status yorlig'i qo'shma.`;
   const schemas = {
-    formula: `Aynan rejalashtirilgan LaTeX formulani qaytar, yangi formula to'qima. Formula Word'ga OMML (native tenglama) bo'lib tushadi, shuning uchun toza standart LaTeX yoz: \\frac, ^{}, _{}, \\sqrt, \\sum, \\int, \\left( \\right), \\text{} — $ belgilari, \\label, \\tag yoki raqam qo'shma. "where" maydonida formuladagi HAR BIR belgini ketma-ket izohla: belgi $...$ ichida, keyin tire, ma'nosi va o'lchov birligi (masalan: "$U$ — kuchlanish, V; $I$ — tok kuchi, A; $R$ — qarshilik, Om"). "bu yerda" so'zini yozma — dastur o'zi qo'shadi. JSON: {"slot_id":"${slot.slot_id}","type":"formula","latex":"...","display_text":"...","caption":"...","where":"$X$ — ..., birlik; $Y$ — ..., birlik"}`,
+    formula: `${(typeof slot.plan === "string" ? slot.plan : slot.plan?.latex) ? "Aynan rejalashtirilgan LaTeX formulani qaytar, yangi formula to'qima." : "Rejada faqat formula konsepti berilgan: shu bob mazmuniga AYNAN mos, darsliklarda qabul qilingan, boshqa boblardagi formulalarni takrorlamaydigan bitta asosiy formula yoz (umumiy F=ma kabi mavzudan uzoq formulalar emas)."} Formula Word'ga OMML (native tenglama) bo'lib tushadi, shuning uchun toza standart LaTeX yoz: \\frac, ^{}, _{}, \\sqrt, \\sum, \\int, \\left( \\right), \\text{} — $ belgilari, \\label, \\tag yoki raqam qo'shma. "where" maydonida formuladagi HAR BIR belgini ketma-ket izohla: belgi $...$ ichida, keyin tire, ma'nosi va o'lchov birligi (masalan: "$U$ — kuchlanish, V; $I$ — tok kuchi, A; $R$ — qarshilik, Om"). "bu yerda" so'zini yozma — dastur o'zi qo'shadi. JSON: {"slot_id":"${slot.slot_id}","type":"formula","latex":"...","display_text":"...","caption":"...","where":"$X$ — ..., birlik; $Y$ — ..., birlik"}`,
     chart: slot.diagram_type === "mathematical_graph"
       ? `Matplotlib matematik grafik uchun JSON qaytar. 1–5 ta mavzuga mos aniq funksiyani yoz; rejadagi functions, x_min va x_max mavjud bo‘lsa ularni aynan saqla, mavzu/rejaga zid funksiya bilan almashtirma. Ifodada faqat x, pi, e, raqamlar, + - * / **, qavs va sin/cos/tan/asin/acos/atan/sinh/cosh/tanh/exp/log/log10/sqrt/abs funksiyalaridan foydalan. x_min < x_max bo‘lsin; render 501 namunaviy nuqtani hisoblab, silliq egri chiziq chizadi — y qiymatlarini qo‘lda sanab kiritma. Oraliq va ifoda mazmuniga mos, sarlavha/birlik/o‘qlarni aniq yoz. GOST uslubi: o'q yozuvlarida kattalik belgisi va birlik bo'lsin (masalan \"Harorat $T$\", unit \"°C\"); mazmunan muhim chegara/me'yor qiymati bo'lsa, ixtiyoriy \"threshold\":{\"value\":...,\"label\":\"...\"} maydonini qo'sh — u qizil punktir chiziq bo'lib chiziladi. Haqiqiy manba promptda bo‘lmasa, manba uydirma qilma va data_source ni bo‘sh qoldir. JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"mathematical_graph","chartType":"line","title":"...","functions":[{"name":"f(x)","expression":"x**2"}],"x_min":-5,"x_max":5,"x_label":"x","y_label":"f(x)","unit":"","data_source":"","caption":"..."}`
       : slot.diagram_type === "experiment_results"
@@ -502,11 +502,14 @@ function normalizeMediaSlotResult(slot, response, { chapter, language }) {
   if (slot.type === "formula") {
     const plannedLatex = typeof plan === "string" ? plan : String(plan.latex || chapter?.formula_latex?.[slot.ordinal - 1] || "").trim();
     const responseLatex = normalizeFormulaSource(response.latex || plannedLatex);
-    if (!plannedLatex || formulaKey(responseLatex) !== formulaKey(plannedLatex)) {
+    if (!plannedLatex) {
+      // Rejada faqat konsept bor: formulani media so'rovi yozadi (OMML tekshiruvi keyinroq).
+      if (!responseLatex || responseLatex.length < 3) throw new Error("formula bo'sh qaytdi");
+    } else if (formulaKey(responseLatex) !== formulaKey(plannedLatex)) {
       throw new Error("formula rejalashtirilgan LaTeX bilan mos emas");
     }
     return {
-      type: "formula", slot_id: slot.slot_id, latex: normalizeFormulaSource(plannedLatex),
+      type: "formula", slot_id: slot.slot_id, latex: normalizeFormulaSource(plannedLatex || responseLatex),
       display_text: String(response.display_text || plan.display_text || plannedLatex),
       caption: String(response.caption || plan.caption || plan.concept || "Rejalashtirilgan formula"),
       where: cleanFormulaWhere(response.where || plan.where || ""),
@@ -697,6 +700,12 @@ async function generateMediaSlot(slot, { chapter, topic, language, sourceContent
     }
   }
 
+  const planLatex = slot.type === "formula" ? (typeof slot.plan === "string" ? slot.plan : slot.plan?.latex) : "ok";
+  if (slot.type === "formula" && !String(planLatex || "").trim()) {
+    // Konsept-reja formulasi yozilmadi: uydirma formula qo'ymaymiz, slot tashlab ketiladi.
+    console.warn(`[mustaqil] formula slot ${slot.slot_id} tashlab ketildi (${lastError?.message || "xato"})`);
+    return { slot, item: { type: "skip", slot_id: slot.slot_id }, image: null, fallback: true, skipped: true };
+  }
   const item = fallbackMediaSlot(slot, { chapter, language });
   try {
     const image = await renderAndVerifyMedia(item, language);
@@ -945,7 +954,14 @@ async function retryDeficientTextSlots(chapters, outlineChapters, retry, concurr
       return ratio < minimumRatio ? minimum - words : ratio > WORD_MAX_ACCEPTANCE_RATIO ? words - maximum : 0;
     };
 
+    // Cheklangan urinish: model doim qisqa yozsa ham buyurtma osilib qolmasin va API xarajati
+    // cheksiz o'smasin. Qolgan farqni sahifa moslash bosqichi (page-fit) to'g'rilaydi.
+    const maxAttempts = Math.max(1, Math.floor(Number(process.env.MUSTAQIL_TEXT_RETRIES) || 4));
     while (distanceFromAcceptanceRange(bestWords) > 0) {
+      if (attempt >= maxAttempts) {
+        console.warn(`[mustaqil] matn slot ${slot.sectionId}: ${maxAttempts} urinishdan keyin eng yaxshi variant (${bestWords}/${slot.target} so'z) qoldirildi`);
+        break;
+      }
       attempt++;
       let content;
       try {
@@ -1083,16 +1099,17 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   const rawRequestedFlowchartCount = flowchartCount == null ? null : Math.max(0, Math.floor(Number(flowchartCount) || 0));
   const rawRequestedChartCount = chartCount == null ? undefined : Math.max(0, Math.floor(Number(chartCount) || 0));
   const effectiveFormulaCount = formulaCount == null && Array.isArray(formulaPlans) ? formulaPlans.length : formulaCount;
-  const requestedFormulaCount = resolveFormulaQuota(pagePlanForWork.mainChapterCount, { formulaCount: effectiveFormulaCount, topic });
+  const requestedFormulaCount = resolveFormulaQuota(pagePlanForWork.mainChapterCount, { formulaCount: effectiveFormulaCount, topic, pages: pagePlanForWork.requestedPages });
   const diagramQuotas = resolveDiagramQuotas(pagePlanForWork.mainChapterCount, {
     flowchartCount: rawRequestedFlowchartCount,
     chartCount: rawRequestedChartCount,
+    pages: pagePlanForWork.requestedPages,
   });
   const requestedFlowchartCount = diagramQuotas.flowchartCount;
   const requestedChartCount = diagramQuotas.chartCount;
   for (const [name, count] of [["formula", requestedFormulaCount], ["chart", requestedChartCount], ["flowchart", requestedFlowchartCount]]) {
-    if (count != null && count > pagePlanForWork.mainChapterCount) {
-      throw new Error(`${count} ta ${name} uchun kamida ${count} ta asosiy bo'lim kerak; sahifa rejasi esa ${pagePlanForWork.mainChapterCount} ta bo'lim beradi.`);
+    if (count != null && count > mediaCapacity(pagePlanForWork.mainChapterCount)) {
+      throw new Error(`${count} ta ${name} uchun kamida ${Math.ceil(count / MAX_PER_CHAPTER_PER_TYPE)} ta asosiy bo'lim kerak; sahifa rejasi esa ${pagePlanForWork.mainChapterCount} ta bo'lim beradi.`);
     }
   }
   if (requestedFormulaCount != null && Array.isArray(formulaPlans) && formulaPlans.length !== requestedFormulaCount) {

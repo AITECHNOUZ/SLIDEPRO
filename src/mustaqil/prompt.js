@@ -9,7 +9,7 @@
 
 // Calibrated against the DOCX layout (A4, Times New Roman 14pt, 1.5 spacing).
 const { normalizeHeadingTitle } = require("./headings");
-const { MIN_DIAGRAM_COUNT, resolveDiagramQuotas, resolveFormulaQuota } = require("./media-requirements");
+const { MIN_DIAGRAM_COUNT, MAX_PER_CHAPTER_PER_TYPE, resolveDiagramQuotas, resolveFormulaQuota } = require("./media-requirements");
 const { buildFlowchartCaption } = require("./flowchart-data");
 const { classifyGraphvizType, classifyMatplotlibType } = require("./diagram-types");
 const { getFlowchartTemplate } = require("./flowchart-templates");
@@ -123,11 +123,9 @@ function flowchartChapterPriority(chapter, ordinal, index) {
 
 function normalizeOutlineForPages(outline, { pages, topic, language, studentName, studentGroup, org, supervisor, flowchartCount = null, chartCount, formulaCount, formulaPlans = [], chartPlans = [] } = {}) {
   const plan = pagePlan(pages);
-  const diagramQuotas = resolveDiagramQuotas(plan.mainChapterCount, { flowchartCount, chartCount });
-  const formulaQuota = resolveFormulaQuota(plan.mainChapterCount, { formulaCount, topic });
-  if (formulaQuota > plan.mainChapterCount) {
-    throw new Error(`${formulaQuota} ta formula uchun kamida ${formulaQuota} ta asosiy bo'lim kerak; sahifa rejasi esa ${plan.mainChapterCount} ta bo'lim beradi.`);
-  }
+  const diagramQuotas = resolveDiagramQuotas(plan.mainChapterCount, { flowchartCount, chartCount, pages: plan.requestedPages });
+  const formulaQuota = resolveFormulaQuota(plan.mainChapterCount, { formulaCount, topic, pages: plan.requestedPages });
+  const perChapterCap = MAX_PER_CHAPTER_PER_TYPE;
   const chartQuota = diagramQuotas.chartCount;
   const safeOutline = outline && typeof outline === "object" && !Array.isArray(outline) ? outline : {};
   const sourceChapters = Array.isArray(safeOutline.chapters)
@@ -169,6 +167,28 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     const { chapter, index } = candidates[0];
     flowchartAssignments.set(index, defaultFlowchartPlan(topic || chapter.title, ordinal, language, chapter.title));
   }
+  // Blok-sxemalar: kvota boblar sonidan oshsa, ikkinchi sxema (boshqa turdagi) eng kam yuklangan bobga.
+  const flowchartLists = new Map(mainChapters.map((_chapter, index) => [index, flowchartAssignments.has(index) ? [flowchartAssignments.get(index)] : []]));
+  let flowchartTotal = flowchartAssignments.size;
+  while (flowchartTotal < desiredFlowchartCount) {
+    let target = -1;
+    mainChapters.forEach((_chapter, index) => {
+      const count = flowchartLists.get(index).length;
+      if (count >= perChapterCap) return;
+      if (target < 0 || count < flowchartLists.get(target).length) target = index;
+    });
+    if (target < 0) break;
+    const chapter = mainChapters[target];
+    const sourcePlans = (Array.isArray(chapter.flowchart_plans) ? chapter.flowchart_plans : []).filter(plan => plan && plan.title);
+    const existing = flowchartLists.get(target);
+    const selectedPlan = sourcePlans[existing.length] || defaultFlowchartPlan(topic || chapter.title, flowchartTotal, language, chapter.title);
+    existing.push({
+      ...selectedPlan,
+      diagram_type: selectedPlan.diagram_type || classifyGraphvizType({ topic, chapterTitle: chapter.title, planTitle: selectedPlan.title, purpose: selectedPlan.purpose }),
+      caption: selectedPlan.caption || buildFlowchartCaption(selectedPlan, selectedPlan.purpose, language),
+    });
+    flowchartTotal++;
+  }
   const fixedFormulaPlans = (Array.isArray(formulaPlans) ? formulaPlans : [])
     .filter(formula => (typeof formula === "string" ? formula : formula?.latex)?.trim())
     .slice(0, formulaQuota);
@@ -184,12 +204,34 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     ...fixedFormulaPlans.map(plan => ({ plan, sourceIndex: null })),
     ...sourceFormulaPlans,
   ].slice(0, formulaQuota);
-  const formulaAssignments = new Map();
+  // Formulalar: har bobga ko'pi bilan 2 ta; LLM rejasi yetmasa — bob mavzusiga oid bo'sh reja
+  // (formula media so'rovida bob mazmuniga mos formula yoziladi).
+  const formulaAssignments = new Map(mainChapters.map((_chapter, index) => [index, []]));
+  const leastLoaded = (map, cap, preferred = null) => {
+    // Rejadagi bob faqat hali bo'sh bo'lsa ustuvor: formulalar boblarga teng taqsimlansin.
+    if (Number.isInteger(preferred) && map.get(preferred) && map.get(preferred).length === 0) return preferred;
+    let best = -1;
+    mainChapters.forEach((_chapter, index) => {
+      const count = map.get(index).length;
+      if (count >= cap) return;
+      if (best < 0 || count < map.get(best).length) best = index;
+    });
+    return best;
+  };
   for (const candidate of formulaCandidates) {
-    const targetIndex = Number.isInteger(candidate.sourceIndex) && !formulaAssignments.has(candidate.sourceIndex)
-      ? candidate.sourceIndex
-      : mainChapters.findIndex((_chapter, index) => !formulaAssignments.has(index));
-    if (targetIndex >= 0) formulaAssignments.set(targetIndex, candidate.plan);
+    const targetIndex = leastLoaded(formulaAssignments, perChapterCap, candidate.sourceIndex);
+    if (targetIndex >= 0) formulaAssignments.get(targetIndex).push(candidate.plan);
+  }
+  let formulaTotal = [...formulaAssignments.values()].reduce((sum, list) => sum + list.length, 0);
+  while (formulaTotal < formulaQuota) {
+    const targetIndex = leastLoaded(formulaAssignments, perChapterCap);
+    if (targetIndex < 0) break;
+    const chapter = mainChapters[targetIndex];
+    formulaAssignments.get(targetIndex).push({
+      latex: "",
+      concept: `"${chapter.title || fallbackMainTitle(topic, targetIndex)}" bo'limidagi asosiy hisob/bog'lanish formulasi (${formulaAssignments.get(targetIndex).length + 1})`,
+    });
+    formulaTotal++;
   }
   const fixedChartPlans = (Array.isArray(chartPlans) ? chartPlans : [])
     .filter(chart => chart && typeof chart === "object" && chart.title)
@@ -199,23 +241,28 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     .map((chapter, index) => ({ chapter, index }))
     .sort((left, right) => Number(flowchartAssignments.has(left.index)) - Number(flowchartAssignments.has(right.index)) || left.index - right.index);
   const explicitClassicTypes = chartCount != null && chartQuota === 2 ? ["bar", "line"] : null;
-  for (const candidate of chartCandidates) {
-    if (chartAssignments.size >= chartQuota) break;
-    const sourceChart = Array.isArray(candidate.chapter.chart_plans)
-      ? candidate.chapter.chart_plans.find(chart => chart && typeof chart === "object" && chart.title)
-      : null;
-    const ordinal = chartAssignments.size;
+  // Grafiklar: avval har bobga bittadan, kvota katta bo'lsa ikkinchi aylanishda yana bittadan.
+  const chartRounds = [];
+  for (let round = 0; round < perChapterCap; round++) chartRounds.push(...chartCandidates.map(candidate => ({ ...candidate, round })));
+  let chartOrdinal = 0;
+  for (const candidate of chartRounds) {
+    if (chartOrdinal >= chartQuota) break;
+    const sourceCharts = Array.isArray(candidate.chapter.chart_plans)
+      ? candidate.chapter.chart_plans.filter(chart => chart && typeof chart === "object" && chart.title)
+      : [];
+    const sourceChart = sourceCharts[candidate.round] || null;
+    const ordinal = chartOrdinal++;
     const fallbackTypes = ["line", "bar", "pie"];
     // Klassik juftlik (bar + line): oldingi grafik majburan "line" bo'lgan bo'lsa (masalan, matematik
     // grafik), keyingisiga qolgan turni beramiz — ikkalasi ham line bo'lib qolmasin.
-    const usedTypes = [...chartAssignments.values()].map(item => item.chartType);
+    const usedTypes = [...chartAssignments.values()].flat().map(item => item.chartType);
     const remainingClassic = explicitClassicTypes ? explicitClassicTypes.filter(type => !usedTypes.includes(type)) : [];
     const chartType = explicitClassicTypes
       ? (remainingClassic[0] || explicitClassicTypes[ordinal])
       : (["bar", "line", "pie"].includes(candidate.chapter.chart_type) ? candidate.chapter.chart_type : fallbackTypes[ordinal % fallbackTypes.length]);
     const chartPlan = fixedChartPlans[ordinal] || sourceChart || {
-        title: `${candidate.chapter.title || fallbackMainTitle(topic, candidate.index)}: asosiy ko'rsatkichlar`,
-        variable: `${topic || candidate.chapter.title || "Mavzu"} bo'yicha tahliliy ko'rsatkichlar`,
+        title: `${candidate.chapter.title || fallbackMainTitle(topic, candidate.index)}: ${candidate.round ? "qiyosiy tahlil" : "asosiy ko'rsatkichlar"}`,
+        variable: `${topic || candidate.chapter.title || "Mavzu"} bo'yicha ${candidate.round ? "qiyosiy" : "tahliliy"} ko'rsatkichlar`,
       };
     const diagramType = classifyMatplotlibType({
       topic,
@@ -227,8 +274,9 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     const resolvedChartType = diagramType === "mathematical_graph" ? "line"
       : diagramType === "experiment_results" && !["bar", "line"].includes(chartType) ? "bar"
         : chartType;
-    chartAssignments.set(candidate.index, {
-      plan: diagramType ? { ...chartPlan, diagram_type: diagramType, chartType: resolvedChartType } : chartPlan,
+    if (!chartAssignments.has(candidate.index)) chartAssignments.set(candidate.index, []);
+    chartAssignments.get(candidate.index).push({
+      plan: { ...chartPlan, ...(diagramType ? { diagram_type: diagramType } : {}), chartType: resolvedChartType },
       chartType: resolvedChartType,
       diagramType,
     });
@@ -248,13 +296,11 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
     const existingSections = Array.isArray(chapter.sections) ? chapter.sections : [];
     const usedTitles = new Set();
     const mainTitle = uniquePlanTitle(chapter.title, usedMainTitles, fallbackMainTitle(topic, index));
-    const assignedFormula = formulaAssignments.get(index);
-    const formulaPlans = assignedFormula ? [assignedFormula] : [];
-    const assignedChart = chartAssignments.get(index);
-    const chartCount = assignedChart ? 1 : 0;
-    const assignedFlowchart = flowchartAssignments.get(index);
-    const flowchartCount = assignedFlowchart ? 1 : 0;
-    const flowchartPlans = assignedFlowchart ? [assignedFlowchart] : [];
+    const formulaPlans = formulaAssignments.get(index) || [];
+    const assignedCharts = chartAssignments.get(index) || [];
+    const chartCount = assignedCharts.length;
+    const flowchartPlans = flowchartLists.get(index) || [];
+    const flowchartCount = flowchartPlans.length;
     const tableCount = tableSlotAvailable && Number(chapter.table_count) > 0 ? 1 : 0;
     if (tableCount) tableSlotAvailable = false;
     const sections = Array.from({ length: desiredCount }, (_, sectionIndex) => {
@@ -277,10 +323,10 @@ function normalizeOutlineForPages(outline, { pages, topic, language, studentName
       sections,
       formula_count: formulaPlans.length,
       formula_plans: formulaPlans,
-      formula_latex: formulaPlans.map(formula => typeof formula === "string" ? formula : formula.latex),
+      formula_latex: formulaPlans.map(formula => typeof formula === "string" ? formula : (formula.latex || "")),
       chart_count: chartCount,
-      chart_type: chartCount ? assignedChart.chartType : null,
-      chart_plans: chartCount ? [assignedChart.plan] : [],
+      chart_type: chartCount ? assignedCharts[0].chartType : null,
+      chart_plans: assignedCharts.map(item => item.plan),
       flowchart_count: flowchartCount,
       flowchart_plans: flowchartPlans,
       table_count: tableCount,
@@ -325,15 +371,12 @@ function outlineSystemPrompt() {
 
 function outlineUserPrompt({ topic, pages, language, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount = null, chartCount = null, formulaCount = null }) {
   const plan = pagePlan(pages);
-  const diagramQuotas = resolveDiagramQuotas(plan.mainChapterCount, { flowchartCount, chartCount });
+  const diagramQuotas = resolveDiagramQuotas(plan.mainChapterCount, { flowchartCount, chartCount, pages: plan.requestedPages });
   const requestedFlowcharts = diagramQuotas.flowchartCount;
   const totalWords = plan.totalWords;
   const sectionDistribution = plan.sectionCounts.map((count, index) => `asosiy bo'lim ${index + 1}: ${count}`).join(", ");
   const mediaPerTypeLimit = Math.max(1, Math.ceil(plan.mainChapterCount / 2));
-  const requestedFormulas = resolveFormulaQuota(plan.mainChapterCount, { formulaCount, topic });
-  if (requestedFormulas > plan.mainChapterCount) {
-    throw new Error(`${requestedFormulas} ta formula uchun kamida ${requestedFormulas} ta asosiy bo'lim kerak; sahifa rejasi esa ${plan.mainChapterCount} ta bo'lim beradi.`);
-  }
+  const requestedFormulas = resolveFormulaQuota(plan.mainChapterCount, { formulaCount, topic, pages: plan.requestedPages });
   const requestedCharts = diagramQuotas.chartCount;
   const mediaSectionLimit = Math.min(plan.mainChapterCount, Math.max(mediaPerTypeLimit, requestedFormulas, requestedCharts, requestedFlowcharts));
   const formulaQuotaText = `aynan ${requestedFormulas}`;
@@ -391,16 +434,16 @@ JSON strukturasida qaytargin:
       "role": "<theory|analysis|application|comparison|methodology>",
       "level": 1,
       "word_target": <raqam>,
-      "formula_count": <0 yoki 1>,
+      "formula_count": <0, 1 yoki 2>,
       "formula_plans": [
         {"latex": "<to\'g\'ri LaTeX>", "concept": "<bu formula nimani ifodalaydi вЂ” boshqa asosiy bo'limda xuddi shu konsept ISHLATILMASIN>"}
       ],
-      "chart_count": <0 yoki 1>,
+      "chart_count": <0, 1 yoki 2>,
       "chart_type": "<bar|line|pie>",
       "chart_plans": [
         {"diagram_type": "<mathematical_graph yoki experiment_results, faqat mazmunan mos bo'lsa>", "title": "<grafik sarlavhasi>", "variable": "<qaysi o'zgaruvchi/ma'lumot ko'rsatiladi вЂ” boshqa asosiy bo'limda xuddi shu ma'lumot ISHLATILMASIN>", "functions": [{"name":"f(x)","expression":"<matematik grafik uchun aniq funksiya>"}], "x_min": -5, "x_max": 5, "labels": ["<sinov sharti>"], "series": [{"name":"<seriya>","values":[<qiymatlar>]}], "unit": "<birlik>"}
       ],
-      "flowchart_count": <0 yoki 1>,
+      "flowchart_count": <0, 1 yoki 2>,
       "flowchart_plans": [
         {"diagram_type": "<functional_block_diagram|algorithm_flowchart|pid_control_system|uml_software_architecture|process_sequence>", "title": "<mazmunga mos sarlavha>", "purpose": "<sxema nimani tushuntiradi>", "caption": "<sxema haqida qisqa o'zbekcha izoh>"}
       ],
@@ -440,10 +483,10 @@ TUZILMA QOIDALARI:
 - Har bir ichki reja bandi ${SECTION_PAGES} sahifa / ${plan.sectionWordTarget} so'zga mo'ljallansin; bo'lim word_target qiymati ichki reja bandlari yig'indisiga teng.
 - Kirish ${plan.introWordTarget}, Xulosa ${plan.conclusionWordTarget} so'zdan oshmasin; ikkalasida ham ichki sarlavha bo'lmasin.
 - Matnli sahifa hisobi fixed 5 sahifa va har bir ichki reja bandiga 1,5 sahifa asosida tuziladi; media sababli 2 betlik ortiqcha joy alohida ruxsat etilgan.
-- Mavzuning matematik/miqdoriy darajasi bo'yicha butun ishga aynan ${requestedFormulas} ta formula, ${chartQuotaText} miqdoriy grafik, aynan ${requestedFlowcharts} ta Graphviz oqim sxemasi va ko'pi bilan 1 jadval rejalashtir; har bir asosiy bo'limga ko'pi bilan bittadan formula, grafik va oqim sxemasi ber. Formula sonini ushbu kvotaga mos to'liq rejalashtir, kamaytirma va tavsifiy mavzuga filler formula qo'shma.
-- Miqdoriy grafiklar va Graphviz oqim sxemalarining jami kamida ${MIN_DIAGRAM_COUNT} ta bo'lsin; bu uchta bilan cheklanadigan yuqori limit emas — mavzu va sahifa rejasi imkon bersa, undan ko'proq diagramma rejalashtir va chiqar.
-- Media bandlarini ko'pi bilan ${mediaSectionLimit} ta asosiy bo'limda jamla; formula va grafiklarni bir-biriga yaqin joylashtir, Kirish va Xulosada media ishlatma.
-- Jami aynan ${requestedFlowcharts} ta Graphviz sxemasi rejalashtir; har biriga mavzu va bo'lim mazmuniga mos diagram_type ber: functional_block_diagram, algorithm_flowchart, pid_control_system, uml_software_architecture yoki process_sequence. Algoritm bo'lsa standart start/end/qaror belgilarini, PID bo'lsa yopiq teskari aloqani, UML bo'lsa haqiqiy komponent/klass munosabatlarini, jarayon ketma-ketligi bo'lsa chapdan o'ngga qadamlarni tanla; boshqa mavzuga mos bo'lmagan tur yoki generic chizma qo'llama. Har bir sxemada ko'pi bilan 5 ta tugun bo'lsin; Kirish va Xulosada sxema bo'lmasin.
+- Mavzuning matematik/miqdoriy darajasi bo'yicha butun ishga aynan ${requestedFormulas} ta formula, ${chartQuotaText} miqdoriy grafik, aynan ${requestedFlowcharts} ta blok-sxema (GOST 19.701) va ko'pi bilan 1 jadval rejalashtir; har bir asosiy bo'limga har bir turdan ko'pi bilan 2 ta ber va media boblarga teng taqsimlansin. Formula sonini ushbu kvotaga mos to'liq rejalashtir, kamaytirma va tavsifiy mavzuga filler formula qo'shma.
+- Miqdoriy grafiklar va blok-sxemalarning jami kamida ${MIN_DIAGRAM_COUNT} ta bo'lsin; bu uchta bilan cheklanadigan yuqori limit emas — mavzu va sahifa rejasi imkon bersa, undan ko'proq diagramma rejalashtir va chiqar.
+- Media barcha asosiy bo'limlarga teng taqsimlansin; Kirish va Xulosada media ishlatma.
+- Jami aynan ${requestedFlowcharts} ta blok-sxema rejalashtir, sxemalar turi bir-biridan farq qilsin; har biriga mavzu va bo'lim mazmuniga mos diagram_type ber: functional_block_diagram, algorithm_flowchart, pid_control_system, uml_software_architecture yoki process_sequence. Algoritm bo'lsa standart start/end/qaror belgilarini, PID bo'lsa yopiq teskari aloqani, UML bo'lsa haqiqiy komponent/klass munosabatlarini, jarayon ketma-ketligi bo'lsa chapdan o'ngga qadamlarni tanla; boshqa mavzuga mos bo'lmagan tur yoki generic chizma qo'llama. Har bir sxemada ko'pi bilan 5 ta tugun bo'lsin; Kirish va Xulosada sxema bo'lmasin.
 - Har asosiy bo'lim BOSHQA JIHATNI yoritsin: nazariy / amaliy / taqqoslov / prognoz
 - Sarlavhalarga strukturaviy yorliq yoki raqam prefiksi yozma — dastur raqamlarni o'zi qo'shadi.
 - Asosiy va ichki sarlavhalar lo'nda, faqat mazmunni ifodalovchi bo'lsin (odatda 3–10 so'z); kirish so'zlari, takroriy mavzu nomi va izohlarni sarlavhaga qo'shma.
@@ -451,7 +494,7 @@ TUZILMA QOIDALARI:
 
 FORMULALAR (mavzuning matematik/miqdoriy xususiyatiga qarab):
 - ANIQ FANLAR (matematika, fizika, kimyo, muhandislik, iqtisodiyot, CS, biologiya):
-  * Butun ish bo'yicha ${formulaQuotaText} ta formula; bir asosiy bo'limda ko'pi bilan 1 ta. ${requestedFormulas === plan.mainChapterCount ? "Har bir asosiy bo'limga aynan bittadan rejalashtir." : "Rejalashtirilgan formulalar soni umumiy kvotaga aynan teng bo'lsin."}
+  * Butun ish bo'yicha ${formulaQuotaText} ta formula; bir asosiy bo'limda ko'pi bilan 2 ta, boblarga teng taqsimla. ${requestedFormulas === plan.mainChapterCount ? "Har bir asosiy bo'limga aynan bittadan rejalashtir." : "Rejalashtirilgan formulalar soni umumiy kvotaga aynan teng bo'lsin."}
   * formula_plans[] da har formula uchun "latex" VA "concept" ko'rsatilsin
   * concept: shu formulaning qanday fizikaviy/matematik hodisani ifodalashini aniq yoz
 
@@ -473,7 +516,7 @@ FORMULALAR (mavzuning matematik/miqdoriy xususiyatiga qarab):
             ch2: concept="Laplace tenglamasidan diskret raqamli rostlash algoritmiga o'tish"
 - Sof tavsifiy, gumanitar yoki umumiy mavzularda (aniq miqdoriy tahlil bo'lmasa): formula_count:0, formula_plans:[]
 
-GRAFIKLAR (butun ish bo'yicha ${chartQuotaText} ta; har asosiy bo'limda 0 yoki 1 ta):
+GRAFIKLAR (butun ish bo'yicha ${chartQuotaText} ta; har asosiy bo'limda 0–2 ta):
 - Aynan 2 ta grafik so'ralganda, klassik statistik ko'rinishlar sifatida bitta "bar" va bitta "line" tanla; har birining ma'lumoti boshqa bo'lsin.
 - "line"  в†’ vaqt dinamikasi, o'zgarish tendensiyasi (X=yillar/oylar)
 - "bar"   в†’ kategoriyalar taqqoslash, miqdoriy farqlar
