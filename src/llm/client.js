@@ -16,6 +16,7 @@
 const crypto = require("crypto");
 const { postJsonWithRetry } = require("../mustaqil/llm-http");
 const { sharedLimiter, estimateTokens } = require("./rate-limiter");
+const { recordUsage } = require("./usage");
 
 const ANTHROPIC_URL = process.env.ANTHROPIC_BASE_URL
   ? `${process.env.ANTHROPIC_BASE_URL.replace(/\/+$/, "")}/v1/messages`
@@ -98,6 +99,20 @@ function providerOrder(provider, cfg) {
 }
 
 // OpenAI reasoning modellari: gpt-5*, o1/o3/o4*
+// Eski modellarning chiqish tokeni chegarasi (undan katta max_tokens 400 xato beradi)
+function modelOutputCap(provider, model) {
+  const name = String(model || "").toLowerCase();
+  if (provider === "anthropic") {
+    if (/claude-3-(haiku|opus|sonnet)/.test(name)) return 4096;
+    if (/claude-3-5/.test(name)) return 8192;
+    return ANTHROPIC_MAX_OUTPUT;
+  }
+  if (/gpt-3\.5|gpt-4-turbo|gpt-4-\d{4}|^gpt-4$/.test(name)) return 4096;
+  if (/gpt-4o/.test(name)) return 16384;
+  if (/gpt-4\.1/.test(name)) return 32768;
+  return OPENAI_MAX_OUTPUT;
+}
+
 function isOpenAIReasoningModel(model) {
   return /^(gpt-5|o\d)/i.test(String(model || ""));
 }
@@ -114,7 +129,8 @@ async function callAnthropic({ system, user, apiKey, model, maxTokens, temperatu
   // Har model sinfi (Haiku / Sonnet / Opus) uchun limitlar alohida — alohida navbat
   const limiter = limiterEnabled() ? sharedLimiter(modelClass(model || DEFAULT_ANTHROPIC_MODEL)) : null;
   // max_tokens chiqish limitidan (OTPM) katta bo'lsa so'rov hech qachon sig'masdi — chegaralaymiz
-  const cap = limiter ? Math.min(ANTHROPIC_MAX_OUTPUT, limiter.maxOutputTokens()) : ANTHROPIC_MAX_OUTPUT;
+  const modelCap = modelOutputCap("anthropic", model || DEFAULT_ANTHROPIC_MODEL);
+  const cap = limiter ? Math.min(modelCap, limiter.maxOutputTokens()) : modelCap;
   const budget = Math.min(cap, Math.max(256, Math.floor(maxTokens || 8000)));
   const inputEstimate = estimateTokens(user) + systemCostTokens(system) + 20;
   const body = {
@@ -157,6 +173,11 @@ async function callAnthropic({ system, user, apiKey, model, maxTokens, temperatu
     } : undefined,
   });
 
+  if (data?.usage) {
+    const u = data.usage;
+    // Kesh o'qish arzonroq, lekin hisobda soddalik uchun oddiy kirish sifatida olinadi (yuqori baho)
+    recordUsage(model || DEFAULT_ANTHROPIC_MODEL, (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), u.output_tokens || 0);
+  }
   const text = (data.content || []).filter(block => block.type === "text").map(block => block.text).join("").trim();
   if (data.stop_reason === "max_tokens") throw new TruncatedResponseError("Anthropic", budget);
   if (data.stop_reason === "refusal") throw new Error("Anthropic: model so'rovni rad etdi (refusal)");
@@ -169,15 +190,16 @@ async function callOpenAI({ system, user, apiKey, model, maxTokens, json, temper
   const reasoning = isOpenAIReasoningModel(chosenModel);
   // Reasoning modellar fikrlash tokenlarini ham shu budjetdan sarflaydi — zaxira qo'shamiz.
   const requested = Math.max(256, Math.floor(maxTokens || 8000));
-  const budget = Math.min(OPENAI_MAX_OUTPUT, reasoning ? requested + 8000 : requested);
+  const budget = Math.min(modelOutputCap("openai", chosenModel), reasoning ? requested + 8000 : requested);
   const messages = [];
   if (system) messages.push({ role: "system", content: String(system) });
   messages.push({ role: "user", content: String(user || "") });
   const body = { model: chosenModel, max_completion_tokens: budget, messages };
   if (json) body.response_format = { type: "json_object" };
   if (reasoning) {
-    const effort = process.env.OPENAI_REASONING_EFFORT;
-    if (effort) body.reasoning_effort = effort;
+    // JSON/matn yozish uchun chuqur fikrlash shart emas: "low" — tezroq va 2–4 barobar arzon
+    const effort = process.env.OPENAI_REASONING_EFFORT || "low";
+    if (effort !== "default") body.reasoning_effort = effort;
   } else {
     body.temperature = Number.isFinite(temperature) ? temperature : 0.7;
   }
@@ -188,6 +210,7 @@ async function callOpenAI({ system, user, apiKey, model, maxTokens, json, temper
     body: JSON.stringify(body),
   }, "OpenAI", undefined, { timeoutMs: timeoutFor(budget), retries: intEnv("LLM_RETRIES", 4) });
 
+  if (data?.usage) recordUsage(chosenModel, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0);
   const choice = data.choices && data.choices[0];
   const message = choice && choice.message;
   if (message && message.refusal) throw new Error(`OpenAI: model so'rovni rad etdi (${String(message.refusal).slice(0, 120)})`);
@@ -338,8 +361,18 @@ async function completeValidated({ validate = text => text, attempts = 1, ...arg
   throw lastError;
 }
 
+// Admin model nomini kiritganda: kalit va model haqiqatan ishlashini tekshirish (kichik so'rov)
+async function testModel({ provider, model, apiKey }) {
+  const started = Date.now();
+  const fn = provider === "anthropic" ? callAnthropic : callOpenAI;
+  const text = await fn({ system: "", user: 'Faqat JSON qaytar: {"ok":true}', apiKey, model, maxTokens: 64 });
+  return { ok: /ok/i.test(text), text: String(text).slice(0, 80), ms: Date.now() - started };
+}
+
 module.exports = {
   complete,
+  testModel,
+  modelOutputCap,
   completeValidated,
   cascadePlan,
   attemptsFor,

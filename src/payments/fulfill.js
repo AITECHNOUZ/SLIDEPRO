@@ -106,8 +106,11 @@ async function fulfillOrder(orderId) {
     openaiCheapModel: setting("openai_cheap_model", process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini"),
   };
 
+  const { trackUsage, formatUsage } = require("../llm/usage");
+  let usageInfo = null;
   try {
     let res;
+    const tracked = await trackUsage(async () => {
     if (isMustaqil) {
       await acquireMustaqilSlot(position => _bot.api.sendMessage(order.user_tg_id,
         `🕒 Sizning mustaqil ishingiz navbatda (${position}-o'rin). Oldingi ish tugashi bilan avtomatik boshlanadi.`));
@@ -140,6 +143,11 @@ async function fulfillOrder(orderId) {
         university: order.university || "", faculty: order.faculty || "", department: order.department || "",
         supervisor: order.supervisor || "", llm: llmCfg, outFile }), { orderId });
     }
+    return res;
+    });
+    res = tracked.result;
+    usageInfo = formatUsage(tracked.usage);
+    if (usageInfo) console.log(`[fulfill] #${orderId} sarf: ${usageInfo.replace(/\n/g, " | ")}`);
 
     const caption = isMustaqil
       ? "📄 Mustaqil ishingiz tayyor!\n\n📌 Mavzu: " + order.topic + "\n📋 Sahifalar: " + (res.pageCount || order.pages || 15) + " ta"
@@ -152,8 +160,9 @@ async function fulfillOrder(orderId) {
         const channelCap = isMustaqil
           ? `🆕 #${orderId} | 📝 Mustaqil ish | ${order.topic} | ${order.pages || "?"} bet`
           : `🆕 #${orderId} | 🎨 Taqdimot | ${order.topic} | ${res.slideCount} slayd`;
+        // Kanal (admin) xabarida haqiqiy token sarfi va taxminiy narx
         const sent = await _bot.api.sendDocument(config.deliveryChannelId, new InputFile(outFile), {
-          caption: channelCap,
+          caption: (channelCap + (usageInfo ? "\n" + usageInfo : "")).slice(0, 1000),
         });
         fileId = sent.document && sent.document.file_id;
         channelMsgId = sent.message_id;

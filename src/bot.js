@@ -241,6 +241,7 @@ function providerInline(settingKey, prefix) {
   for (const mode of Object.keys(MODE_LABELS)) kb.text(m(mode)+MODE_LABELS[mode], prefix+":"+mode).row();
   return kb
     .text("✏️ Claude modellari","adm:models:anthropic").text("✏️ OpenAI modellari","adm:models:openai").row()
+    .text("🧪 Modellarni tekshirish","adm:models_test").row()
     .text("⬅️ Orqaga","adm:back");
 }
 bot.callbackQuery("adm:provider", async (ctx) => {
@@ -272,6 +273,32 @@ bot.callbackQuery(/^(prov|mprov):(anthropic|openai|claude_openai|claude_claude)$
   await ctx.answerCallbackQuery("Saqlandi ✅");
   await ctx.editMessageText(aiModeText(prefix === "prov" ? "🤖 <b>Taqdimot uchun AI rejimi</b>" : "📝 <b>Mustaqil ish uchun AI rejimi</b>", key),
     { parse_mode:"HTML", reply_markup: providerInline(key, prefix) }).catch(() => {});
+});
+// Kalit va model nomlari haqiqatan ishlashini kichik so'rov bilan tekshirish
+async function modelTestReport() {
+  const { testModel } = require("./llm/client");
+  const m = modelSettings();
+  const jobs = [
+    ["Claude asosiy", "anthropic", m.anthropicMain, config.anthropicApiKey],
+    ["Claude arzon", "anthropic", m.anthropicCheap, config.anthropicApiKey],
+    ["OpenAI asosiy", "openai", m.openaiMain, config.openaiApiKey],
+    ["OpenAI arzon", "openai", m.openaiCheap, config.openaiApiKey],
+  ];
+  const lines = await Promise.all(jobs.map(async ([label, provider, model, key]) => {
+    if (!key) return `⚪️ ${label}: kalit yo'q`;
+    try {
+      const r = await testModel({ provider, model, apiKey: key });
+      return `${r.ok ? "✅" : "⚠️"} ${label} <code>${esc(model)}</code> — ${(r.ms / 1000).toFixed(1)} s${r.ok ? "" : " (javob formati kutilganidek emas)"}`;
+    } catch (error) {
+      return `❌ ${label} <code>${esc(model)}</code> — ${esc(String(error.message).slice(0, 140))}`;
+    }
+  }));
+  return "🧪 <b>Modellar tekshiruvi</b>\n\n" + lines.join("\n");
+}
+bot.callbackQuery("adm:models_test", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery("Tekshirilmoqda...");
+  await ctx.reply(await modelTestReport(), { parse_mode: "HTML" });
 });
 bot.callbackQuery(/^adm:models:(anthropic|openai)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
@@ -542,7 +569,8 @@ bot.on("message:text", async (ctx) => {
     const valid = parts.length === 2 && parts.every(p => /^[A-Za-z0-9._:-]{3,80}$/.test(p));
     if (!valid) return ctx.reply("Format: <code>asosiy_model arzon_model</code>", { parse_mode:"HTML" });
     db.setSetting(provider + "_main_model", parts[0]); db.setSetting(provider + "_cheap_model", parts[1]);
-    return ctx.reply(`✅ Saqlandi:\nasosiy — <code>${esc(parts[0])}</code>\narzon — <code>${esc(parts[1])}</code>`, { parse_mode:"HTML" });
+    await ctx.reply(`✅ Saqlandi:\nasosiy — <code>${esc(parts[0])}</code>\narzon — <code>${esc(parts[1])}</code>\n\nTekshirilmoqda...`, { parse_mode:"HTML" });
+    return ctx.reply(await modelTestReport(), { parse_mode: "HTML" });
   }
   if (step === "admin_price" && isAdmin(ctx.from.id)) {
     const pts = text.split(/\s+/).map(Number);
