@@ -4,7 +4,7 @@
 //   Pass 2: har bir slayd to'liq kontenti PARALLEL generatsiya qilinadi
 // Bu aniq slayd sonini VA har slaydda to'liq sifatli kontentni kafolatlaydi.
 
-const { LAYOUT_NAMES } = require("./layouts");
+const { labels } = require("./i18n");
 
 // Mazmunli (content) layoutlar — titul/reja/xulosa/adabiyotlardan tashqari
 const CONTENT_LAYOUTS = [
@@ -17,7 +17,8 @@ function outlineSystemPrompt() {
   return `Sen professional taqdimot tuzilmasini yaratuvchi mutaxassissan. FAQAT to'g'ri JSON qaytarasan — izoh, markdown, backtick yo'q.`;
 }
 
-function outlineUserPrompt({ topic, contentSlides, sourceContent }) {
+function outlineUserPrompt({ topic, contentSlides, sourceContent, language }) {
+  const L = labels(language);
   const contentNote = sourceContent
     ? `\n\nFoydalanuvchi MANBA MATNI berdi — slaydlar shunga asoslansin:\n---\n${sourceContent.slice(0, 4000)}\n---`
     : "";
@@ -25,7 +26,8 @@ function outlineUserPrompt({ topic, contentSlides, sourceContent }) {
   return `"${topic}" mavzusida professional taqdimot uchun tuzilma (reja) yarat.
 
 Kerak: AYNAN ${contentSlides} ta mazmunli slayd.
-Har bir slayd uchun: sarlavha, layout turi, va qisqa mazmun tavsifi (1-2 jumla).${contentNote}
+Har bir slayd uchun: sarlavha, layout turi, va qisqa mazmun tavsifi (1-2 jumla).
+TIL: barcha sarlavha va matnlar ${L.languageName} tilida bo'lsin.${contentNote}
 
 Mavjud layout turlari (har biri turli vizual struktura):
 - "stat-callout": katta statistika + yon kartochkalar (raqamlar, foizlar uchun)
@@ -60,7 +62,7 @@ QOIDALAR:
 - Mantiqiy ketma-ketlik: muammo/dolzarblik → tahlil → yechim → natija → xulosa
 - Har slayd alohida g'oyani yoritadi, takrorlanmasin
 - palette: ocean/forest/terracotta/berry/charcoal/teal dan biri (mavzuga mos)
-- references: 5-8 ta HAQIQIY, MAVJUD manba APA 7 formatida (40% o'zbek, 60% xorijiy)
+- references: 5-8 ta FAQAT HAQIQATDA MAVJUD, aniq biladigan manba APA 7 formatida (o'zbek, rus va ingliz tillarida aralash). Ishonching komil bo'lmagan manbani yozma, DOI to'qima — kam bo'lsa ham haqiqiy bo'lsin
 - Faqat JSON qaytar`;
 }
 
@@ -92,13 +94,15 @@ function layoutSchema(layout) {
     "dual-column": `{"layout":"dual-column","title":"<slayd sarlavhasi>","icon":"users","leftTitle":"<chap ustun sarlavhasi>","left":[{"icon":"check","title":"<element 1>","desc":"<tavsif>"},{"icon":"bolt","title":"<element 2>","desc":"<tavsif>"},{"icon":"star","title":"<element 3>","desc":"<tavsif>"}],"rightTitle":"<o'ng ustun sarlavhasi>","right":[{"title":"<element 1>","desc":"<tavsif>","color":"bad"},{"title":"<element 2>","desc":"<tavsif>","color":"accent"},{"title":"<element 3>","desc":"<tavsif>","color":"secondary"}],"strip":[{"value":"<son>","label":"<nomi>"},{"value":"<son>","label":"<nomi>"}]}`,
     "metrics": `{"layout":"metrics","title":"<slayd sarlavhasi>","icon":"gauge","intro":"<kirish 1 jumla>","stats":[{"value":"<son>","unit":"%","label":"<ko'rsatkich nomi>","sub":"<izoh>"},{"value":"<son>","unit":"x","label":"<ko'rsatkich nomi>","sub":"<izoh>"},{"value":"<son>","unit":"kun","label":"<ko'rsatkich nomi>","sub":"<izoh>"},{"value":"<son>","unit":"","label":"<ko'rsatkich nomi>","sub":"<izoh>"}],"stagesTitle":"<bosqichlar sarlavhasi>","stages":[{"title":"<1-bosqich>","desc":"<tavsif>"},{"title":"<2-bosqich>","desc":"<tavsif>"},{"title":"<3-bosqich>","desc":"<tavsif>"}]}`,
     "chart": `{"layout":"chart","title":"<slayd sarlavhasi>","icon":"chart","cards":[{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"},{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"},{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"},{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"}],"chart":{"title":"<diagramma nomi>","type":"bar","seriesName":"<ko'rsatkich>","labels":["<kat1>","<kat2>","<kat3>","<kat4>","<kat5>"],"values":[42,68,55,80,95]},"panels":[{"label":"<panel sarlavhasi>","lines":["<qisqa xulosa 4-6 so'z>"]},{"label":"<panel sarlavhasi>","lines":["<qisqa xulosa 4-6 so'z>"]}]}`,
+    "bullets": `{"layout":"bullets","title":"<slayd sarlavhasi>","icon":"list","intro":"<asosiy fikr, 25-40 so'z>","items":[{"text":"<1-muhim fikr, 8-16 so'z>"},{"text":"<2-muhim fikr>"},{"text":"<3-muhim fikr>"},{"text":"<4-muhim fikr>"}]}`,
     "conclusion": `{"layout":"conclusion","title":"XULOSA","summary":"<mavzu bo'yicha 60-80 so'zlik umumiy xulosa — yaxlit paragraf matni, butun sahifani to'ldirsin>","points":[{"icon":"check","text":"<1-asosiy natija (qisqa jumla)>"},{"icon":"star","text":"<2-asosiy natija>"},{"icon":"rocket","text":"<3-asosiy natija>"},{"icon":"layers","text":"<4-asosiy natija>"}]}`,
   };
   return schemas[layout] || schemas["feature-grid"];
 }
 
-function slideUserPrompt({ slide, outline, topic, language }) {
-  const lang = language || "o'zbek";
+function slideUserPrompt({ slide, outline, topic, language, retryNote = "" }) {
+  const L = labels(language);
+  const lang = L.languageName;
   return `"${topic}" taqdimoti uchun BITTA slayd kontentini to'liq yarat.
 
 Slayd: "${slide.title}" (${slide.n}-slayd)
@@ -115,9 +119,10 @@ QOIDALAR:
 - Matnlar ${lang} tilida, qisqa va ta'sirli (slayd uchun)
 - title: "${slide.title}" ni ishlat
 - icon: faqat shu ro'yxatdan — check, bolt, star, shield, cogs, chart, target, users, globe, leaf, cloud, server, database, search, tools, lightbulb, up, warning, rocket, gauge, book, list, layers
+- Kartochka sarlavhasi 2-5 so'z, tavsif (desc) 8-16 so'zli to'liq jumla — kartochka bo'sh ko'rinmasin
 - Raqamlar/statistika realistik va mavzuga mos bo'lsin
 - LaTeX yoki pastki chiziq (_) ISHLATMA
-- Faqat JSON qaytar`;
+- Faqat JSON qaytar${slide.layout === "conclusion" ? `\n- title: "${L.conclusion}"` : ""}${retryNote ? `\n\nOLDINGI JAVOBDAGI XATO (takrorlama): ${retryNote}` : ""}`;
 }
 
 function parseSlide(text) {

@@ -107,8 +107,13 @@ class RateLimiter {
     const map = { requests: "requests", input: "input-tokens", output: "output-tokens" };
     this.refill();
     for (const [dim, name] of Object.entries(map)) {
-      const limit = Number(headers.get(`anthropic-ratelimit-${name}-limit`));
-      const remaining = Number(headers.get(`anthropic-ratelimit-${name}-remaining`));
+      // Sarlavha yo'q bo'lsa (proksi, test) — Number(null)=0 limitni nolga tushirmasin
+      const header = key => {
+        const raw = headers.get(key);
+        return raw == null || String(raw).trim() === "" ? NaN : Number(raw);
+      };
+      const limit = header(`anthropic-ratelimit-${name}-limit`);
+      const remaining = header(`anthropic-ratelimit-${name}-remaining`);
       if (Number.isFinite(limit) && limit > 0) {
         const capacity = limit * this.safety;
         if (Math.abs(capacity - this.capacity[dim]) > 1) {

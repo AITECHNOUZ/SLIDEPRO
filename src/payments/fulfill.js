@@ -105,8 +105,6 @@ async function fulfillOrder(orderId) {
     openaiModel: setting("openai_main_model", config.openaiModel),
     openaiCheapModel: setting("openai_cheap_model", process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini"),
   };
-  // Taqdimot generatori eski provayder nomlarini tushunadi: kaskad rejimlari unga moslab beriladi
-  const presentationLlm = { ...llmCfg, provider: llmProvider === "claude_openai" ? "both" : llmProvider === "claude_claude" ? "anthropic" : llmProvider };
 
   try {
     let res;
@@ -136,10 +134,11 @@ async function fulfillOrder(orderId) {
       }
       res.slideCount = order.pages || 15;
     } else {
-      res = await generatePresentation({ topic: order.topic, slides: order.slides,
-        sourceContent: order.content_text || "",
+      res = await withRetries(() => generatePresentation({ topic: order.topic, slides: order.slides,
+        sourceContent: order.content_text || "", language: order.language || "o'zbek",
         studentName: order.student_name || "", studentGroup: order.student_group || "",
-        llm: presentationLlm, outFile });
+        university: order.university || "", faculty: order.faculty || "", department: order.department || "",
+        supervisor: order.supervisor || "", llm: llmCfg, outFile }), { orderId });
     }
 
     const caption = isMustaqil

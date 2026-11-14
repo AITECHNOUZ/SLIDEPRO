@@ -116,3 +116,10 @@ test("kaskad: arzon model 2 marta yaroqsiz javob bersa qimmat modelga o'tadi", a
     resetSharedLimiter(null);
   }
 });
+
+test("rate-limit sarlavhalari bo'lmasa limit nolga tushmaydi", () => {
+  const limiter = new RateLimiter({ requests: 50, input: 30_000, output: 8_000 }, { safety: 1 });
+  limiter.updateFromHeaders({ get: () => null });
+  assert.equal(limiter.maxOutputTokens(), 8000);
+  assert.ok(limiter.tokens.output > 7000 && limiter.tokens.requests > 40);
+});

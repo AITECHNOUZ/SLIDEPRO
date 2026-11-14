@@ -645,6 +645,33 @@ function agenda(pres, slide, d, ctx) {
   });
 }
 
+// =====================================================================
+// BULLETS — sodda, lekin to'la slayd (zaxira va qisqa mazmun uchun)
+// =====================================================================
+function bullets(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "list");
+  const items = (d.items || []).slice(0, 5);
+  const hasIntro = !!d.intro;
+  const listX = hasIntro ? 5.3 : MX;
+  if (hasIntro) {
+    card(slide, pres, MX, 1.75, 4.3, 5.15, t.primary, true);
+    slide.addShape(pres.shapes.RECTANGLE, { x: MX + 0.35, y: 2.15, w: 0.9, h: 0.08, fill: { color: t.accent } });
+    txt(slide, d.intro, { x: MX + 0.35, y: 2.4, w: 3.6, h: 4.2, fontFace: FONTS.body, fontSize: 17, color: t.card, lineSpacingMultiple: 1.25, valign: "top" });
+  }
+  const area = { x: listX, y: 1.75, w: W - MX - listX, h: 5.15 };
+  const gap = 0.2;
+  const rowH = (area.h - gap * (items.length - 1)) / Math.max(1, items.length);
+  items.forEach((it, i) => {
+    const y = area.y + i * (rowH + gap);
+    card(slide, pres, area.x, y, area.w, rowH, t.card);
+    slide.addShape(pres.shapes.RECTANGLE, { x: area.x, y, w: 0.12, h: rowH, fill: { color: i % 2 ? t.secondary : t.primary } });
+    txt(slide, String(i + 1).padStart(2, "0"), { x: area.x + 0.3, y, w: 0.8, h: rowH, fontFace: FONTS.head, fontSize: 24, bold: true, color: t.secondary, valign: "middle" });
+    txtFit(slide, it.text || "", { x: area.x + 1.15, y: y + 0.08, w: area.w - 1.4, h: rowH - 0.16, fontFace: FONTS.body, fontSize: 16, color: t.ink, valign: "middle", lineSpacingMultiple: 1.1 });
+  });
+}
+
 // ---------- registr ----------
 const LAYOUTS = {
   title,
@@ -660,6 +687,7 @@ const LAYOUTS = {
   chart: chartLayout,
   conclusion,
   references,
+  bullets,
 };
 const LAYOUT_NAMES = Object.keys(LAYOUTS);
 

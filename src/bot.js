@@ -357,11 +357,12 @@ bot.callbackQuery(/^slides:(.+)$/, async (ctx) => {
     return ctx.reply("Sahifa sonini yozing ("+config.minSlides+"–"+config.maxSlides+"):");
   }
   ctx.session.draft.slides = parseInt(val, 10);
+  ctx.session.step = "await_lang";
   await ctx.editMessageText("✅ Sahifa soni: "+val);
-  await askStudentDetailsOrContinue(ctx);
+  await askLang(ctx);
 });
 
-// Til tanlash (mustaqil ish)
+// Til tanlash (mustaqil ish va taqdimot)
 bot.callbackQuery(/^lang:(uz|ru|en)$/, async (ctx) => {
   if (ctx.session.step !== "await_lang") return ctx.answerCallbackQuery();
   await ctx.answerCallbackQuery();
@@ -386,7 +387,7 @@ bot.callbackQuery(/^content:(yes|no)$/, async (ctx) => {
 });
 
 async function askLang(ctx) {
-  await ctx.reply("🌐 Mustaqil ish tilini tanlang:", { reply_markup: langInline() });
+  await ctx.reply(ctx.session.draft.workType === "mustaqil" ? "🌐 Mustaqil ish tilini tanlang:" : "🌐 Taqdimot tilini tanlang:", { reply_markup: langInline() });
 }
 async function askContent(ctx) {
   await ctx.reply(
@@ -401,7 +402,7 @@ async function continueWithoutStudentDetails(ctx) {
   ctx.session.draft.studentGroup = "";
   return afterStudentDetails(ctx);
 }
-// ── TITUL MA'LUMOTLARI (mustaqil ish, VIP/admin'dan so'ralmaydi) ──
+// ── TITUL MA'LUMOTLARI (mustaqil ish va taqdimot, VIP/admin'dan so'ralmaydi) ──
 const TITLE_FIELDS = [
   { key: "university", step: "await_university", ask: "🏛 Universitet nomini kiriting:\n\n<i>Masalan: Qarshi davlat texnika universiteti</i>" },
   { key: "faculty", step: "await_faculty", ask: "🏢 Fakultet nomini kiriting:\n\n<i>Masalan: Energetika</i>" },
@@ -410,7 +411,11 @@ const TITLE_FIELDS = [
 ];
 async function askTitleField(ctx, index) {
   const field = TITLE_FIELDS[index];
-  if (!field) return askToc(ctx);
+  if (!field) {
+    if (ctx.session.draft.workType === "mustaqil") return askToc(ctx);
+    ctx.session.step = "await_content_choice";
+    return askContent(ctx);
+  }
   ctx.session.step = field.step;
   return ctx.reply(field.ask, { parse_mode:"HTML", reply_markup: skipInline(field.key) });
 }
@@ -425,11 +430,12 @@ async function askToc(ctx) {
 }
 // Talaba ma'lumotlaridan keyingi qadam: mustaqil ish → titul/mundarija, taqdimot → kontent
 async function afterStudentDetails(ctx) {
+  // Titul ma'lumotlari (universitet, fakultet, kafedra, tekshiruvchi) — ikkala ish turida ham, VIP/admin'dan so'ralmaydi
+  if (needsStudentDetails(ctx.from.id)) return askTitleField(ctx, 0);
   if (ctx.session.draft.workType !== "mustaqil") {
     ctx.session.step = "await_content_choice";
     return askContent(ctx);
   }
-  if (needsStudentDetails(ctx.from.id)) return askTitleField(ctx, 0);
   return askToc(ctx);
 }
 
@@ -490,8 +496,9 @@ bot.on("message:text", async (ctx) => {
     if (!Number.isFinite(n)||n<config.minSlides||n>config.maxSlides)
       return ctx.reply("Iltimos "+config.minSlides+"–"+config.maxSlides+" oralig'ida son kiriting.");
     ctx.session.draft.slides = n;
+    ctx.session.step = "await_lang";
     await ctx.reply("✅ Sahifa soni: "+n);
-    return askStudentDetailsOrContinue(ctx);
+    return askLang(ctx);
   }
 
   if (step === "await_student_name") {
