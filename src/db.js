@@ -73,6 +73,9 @@ migrate("file_id"); migrate("work_type"); migrate("pages","INTEGER"); migrate("s
 migrate("university"); migrate("faculty"); migrate("department"); migrate("supervisor"); migrate("include_toc","INTEGER");
 migrate("cost_usd","REAL"); migrate("promo_code"); migrate("discount","INTEGER"); migrate("delivered_at","INTEGER");
 try { db.prepare("SELECT banned FROM users LIMIT 1").get(); } catch (_) { try { db.exec("ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0"); } catch (_) {} }
+migrate("reminded","INTEGER"); migrate("balance_used","INTEGER");
+const migrateUsers = (col, def) => { try { db.prepare("SELECT "+col+" FROM users LIMIT 1").get(); } catch (_) { try { db.exec("ALTER TABLE users ADD COLUMN "+col+" "+def); } catch (_) {} } };
+migrateUsers("referred_by", "INTEGER"); migrateUsers("balance", "INTEGER DEFAULT 0"); migrateUsers("ref_rewarded", "INTEGER DEFAULT 0");
 try { db.prepare("SELECT last_seen FROM users LIMIT 1").get(); } catch (_) { try { db.exec("ALTER TABLE users ADD COLUMN last_seen INTEGER"); } catch (_) {} }
 
 db.exec(`

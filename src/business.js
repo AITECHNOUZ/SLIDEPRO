@@ -53,6 +53,9 @@ function overallCounters() {
     users: db.prepare("SELECT COUNT(*) AS n FROM users").get().n,
     active7: db.prepare("SELECT COUNT(*) AS n FROM users WHERE last_seen >= ?").get(Date.now() - 7 * DAY).n,
     banned: db.prepare("SELECT COUNT(*) AS n FROM users WHERE COALESCE(banned,0) = 1").get().n,
+    referred: db.prepare("SELECT COUNT(*) AS n FROM users WHERE referred_by IS NOT NULL").get().n,
+    referredPaid: db.prepare("SELECT COUNT(*) AS n FROM users WHERE ref_rewarded = 1").get().n,
+    balances: db.prepare("SELECT SUM(COALESCE(balance,0)) AS s FROM users").get().s || 0,
     awaitingApproval: db.prepare("SELECT COUNT(*) AS n FROM orders WHERE status = 'awaiting_approval'").get().n,
     generating: db.prepare("SELECT COUNT(*) AS n FROM orders WHERE status IN ('paid','generating')").get().n,
   };
@@ -76,6 +79,7 @@ function statsReport(now = Date.now()) {
     (s.discounts ? `\n🎟 Chegirma: ${fmt(s.discounts)} ${cur}` : "");
   return `📈 <b>Statistika</b>\n\n` +
     `👥 Foydalanuvchilar: <b>${c.users}</b> (7 kunda faol: ${c.active7}, bloklangan: ${c.banned})\n` +
+    `🤝 Taklif orqali: ${c.referred} (to'laganlar: ${c.referredPaid}) · Bonus balanslar: ${fmt(c.balances)} ${cur}\n` +
     `🔄 Tasdiq kutayotgan cheklar: <b>${c.awaitingApproval}</b> · Tayyorlanmoqda: ${c.generating}\n\n` +
     [block("📅 Bugun", today), block("🗓 7 kun", week), block("📆 30 kun", month), block("♾ Jami", all)].join("\n\n") +
     `\n\n<i>AI xarajat 1$ = ${fmt(usdRate())} so'm kursida hisoblangan.</i>`;
@@ -201,6 +205,101 @@ function checkDailyCostAlert(now = Date.now()) {
   return `💸 Diqqat: bugungi AI xarajat $${spent.toFixed(2)} — belgilangan chegara $${limit.toFixed(2)} dan oshdi.`;
 }
 
+// ── TAKLIF (REFERAL) TIZIMI ────────────────────────────────
+// Do'st havola orqali kelib, birinchi pullik buyurtmasini to'lasa — taklif qilganga bonus balans.
+// Yangi kelgan do'st birinchi buyurtmasiga chegirma oladi.
+function referralEnabled() { return getSetting("referral_enabled", "1") === "1"; }
+function refBonus() { const n = parseInt(getSetting("ref_bonus", "5000"), 10); return Number.isFinite(n) && n > 0 ? n : 0; }
+function refNewDiscount() { const n = parseInt(getSetting("ref_new_discount", "10"), 10); return Number.isFinite(n) && n > 0 && n <= 100 ? n : 0; }
+
+function parseStartPayload(payload) {
+  const m = String(payload || "").match(/^ref_?(\d{1,15})$/);
+  return m ? Number(m[1]) : null;
+}
+// Faqat yangi foydalanuvchiga va o'zini o'zi taklif qilmasa
+function setReferrer(userId, referrerId) {
+  if (!referralEnabled() || !referrerId || referrerId === userId) return false;
+  if (!dbm.getUser(referrerId)) return false;
+  const u = dbm.getUser(userId);
+  if (!u || u.referred_by) return false;
+  db.prepare("UPDATE users SET referred_by = ? WHERE tg_id = ?").run(referrerId, userId);
+  return true;
+}
+function getBalance(userId) { const u = dbm.getUser(userId); return u ? Number(u.balance) || 0 : 0; }
+function addBalance(userId, amount) { db.prepare("UPDATE users SET balance = MAX(COALESCE(balance,0) + ?, 0) WHERE tg_id = ?").run(Math.round(amount), userId); }
+
+// Yangi do'stga birinchi buyurtma chegirmasi: taklif orqali kelgan va hali pullik buyurtmasi yo'q
+function referralDiscountFor(userId, amount) {
+  const pct = refNewDiscount();
+  if (!referralEnabled() || !pct || !amount) return 0;
+  const u = dbm.getUser(userId);
+  if (!u || !u.referred_by) return 0;
+  const ph = PAID_STATUSES.map(() => "?").join(",");
+  const had = db.prepare(`SELECT 1 FROM orders WHERE user_tg_id = ? AND status IN (${ph},'awaiting_approval')
+    AND COALESCE(payment_method,'') NOT IN ('free') LIMIT 1`).get(userId, ...PAID_STATUSES);
+  return had ? 0 : Math.round(amount * pct / 100);
+}
+
+// To'lov tasdiqlanganda chaqiriladi; bir do'st uchun bonus faqat bir marta. Bonus olgan taklifchi id'sini qaytaradi.
+const creditReferral = db.transaction((order) => {
+  if (!order || !referralEnabled()) return null;
+  if (["free", "promo", "balance"].includes(order.payment_method) || !(order.amount > 0)) return null;
+  const u = dbm.getUser(order.user_tg_id);
+  if (!u || !u.referred_by || u.ref_rewarded) return null;
+  const bonus = refBonus();
+  if (!bonus) return null;
+  db.prepare("UPDATE users SET ref_rewarded = 1 WHERE tg_id = ?").run(order.user_tg_id);
+  addBalance(u.referred_by, bonus);
+  return { referrer: u.referred_by, bonus };
+});
+
+function referralStats(userId) {
+  const invited = db.prepare("SELECT COUNT(*) AS n FROM users WHERE referred_by = ?").get(userId).n;
+  const paid = db.prepare("SELECT COUNT(*) AS n FROM users WHERE referred_by = ? AND ref_rewarded = 1").get(userId).n;
+  return { invited, paid, earned: paid * refBonus(), balance: getBalance(userId) };
+}
+function topReferrers(limit = 5) {
+  return db.prepare(`SELECT referred_by AS id, COUNT(*) AS invited, SUM(CASE WHEN ref_rewarded = 1 THEN 1 ELSE 0 END) AS paid
+    FROM users WHERE referred_by IS NOT NULL GROUP BY referred_by ORDER BY paid DESC, invited DESC LIMIT ?`).all(limit);
+}
+
+// Balansdan yechilgan summa — buyurtma rad etilsa / bekor qilinsa qaytariladi
+const releaseBalance = db.transaction((orderId) => {
+  const o = dbm.getOrder(orderId);
+  if (!o || !(o.balance_used > 0)) return 0;
+  addBalance(o.user_tg_id, o.balance_used);
+  db.prepare("UPDATE orders SET balance_used = 0 WHERE id = ?").run(orderId);
+  return o.balance_used;
+});
+const spendBalance = db.transaction((userId, orderId, amount) => {
+  const have = getBalance(userId);
+  const use = Math.min(have, Math.max(0, Math.round(amount)));
+  if (!use) return 0;
+  addBalance(userId, -use);
+  db.prepare("UPDATE orders SET balance_used = ? WHERE id = ?").run(use, orderId);
+  return use;
+});
+
+// ── TO'LANMAGAN BUYURTMALAR ESLATMASI ──────────────────────
+// reminded: 1 — mijozga eslatma yuborilgan, 2 — muddati o'tib bekor qilingan
+function dueReminders(now = Date.now()) {
+  const after = Number(getSetting("unpaid_remind_min", "30")) * 60000;
+  const expire = Number(getSetting("unpaid_expire_hours", "24")) * 3600000;
+  const remind = db.prepare(`SELECT * FROM orders WHERE status = 'awaiting_payment' AND COALESCE(reminded,0) = 0
+    AND created_at <= ? AND created_at > ?`).all(now - after, now - expire);
+  const expired = db.prepare(`SELECT * FROM orders WHERE status = 'awaiting_payment' AND COALESCE(reminded,0) < 2
+    AND created_at <= ?`).all(now - expire);
+  const stale = db.prepare(`SELECT COUNT(*) AS n FROM orders WHERE status = 'awaiting_approval' AND created_at <= ?`).get(now - 30 * 60000).n;
+  return { remind, expired, staleApprovals: stale };
+}
+function cancelOrder(orderId, status = "cancelled") {
+  const o = dbm.getOrder(orderId);
+  if (!o || !["awaiting_payment", "awaiting_approval"].includes(o.status)) return false;
+  dbm.updateOrder(orderId, { status, reminded: 2 });
+  releasePromo(orderId); releaseBalance(orderId);
+  return true;
+}
+
 // ── FOYDALANUVCHI KARTASI ──────────────────────────────────
 function userSummary(userId) {
   const u = dbm.getUser(userId);
@@ -215,5 +314,8 @@ function userSummary(userId) {
 module.exports = {
   PAID_STATUSES, startOfToday, usdRate, periodStats, overallCounters, statsReport, ordersCsv,
   parsePromoInput, createPromo, deletePromo, listPromos, promoLabel, checkPromo, redeemPromo, releasePromo, hasActivePromos,
+  referralEnabled, refBonus, refNewDiscount, parseStartPayload, setReferrer, getBalance, addBalance,
+  referralDiscountFor, creditReferral, referralStats, topReferrers, releaseBalance, spendBalance,
+  dueReminders, cancelOrder,
   vipDailyLimit, freeOrdersToday, vipQuota, checkDailyCostAlert, userSummary, fmt,
 };

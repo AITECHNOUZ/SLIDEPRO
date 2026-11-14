@@ -36,7 +36,8 @@ bot.use(async (ctx, next) => {
   const id = ctx.from && ctx.from.id;
   if (!id || (ctx.chat && ctx.chat.type !== "private")) return next();
   try {
-    if (db.upsertUser(id, ctx.from.username, ctx.from.first_name) && db.getSetting("notify_new_users", "0") === "1") {
+    ctx.isNewUser = db.upsertUser(id, ctx.from.username, ctx.from.first_name);
+    if (ctx.isNewUser && db.getSetting("notify_new_users", "0") === "1") {
       fulfill.notifyAdmins("👤 Yangi foydalanuvchi: " + (ctx.from.first_name || "") + (ctx.from.username ? " @" + ctx.from.username : "") + " (id:" + id + ")");
     }
   } catch (_) {}
@@ -81,6 +82,7 @@ function mainMenu(id) {
     .text("🎨 Taqdimot yaratish").row()
     .text("📝 Mustaqil ish yaratish").row()
     .text("📂 Mening buyurtmalarim").text("ℹ️ Yordam").row();
+  if (biz.referralEnabled() && !isFree(id)) kb.text("🤝 Do'st taklif qilish").row();
   if (isFree(id) && !isAdmin(id)) kb.text("🎁 Bepul rejim").row();
   if (isAdmin(id)) kb.text("🛠 Admin panel").row();
   return kb.resized();
@@ -132,7 +134,15 @@ function paymentMethodsInline() {
 // ── /start ─────────────────────────────────────────────────
 bot.command("start", async (ctx) => {
   ctx.session.step = "idle"; ctx.session.draft = {};
-  const freeNote = isFree(ctx.from.id) ? "\n\n🎁 Sizda <b>bepul foydalanish</b> huquqi bor!" : "";
+  let refNote = "";
+  const referrer = biz.parseStartPayload(ctx.match);
+  if (ctx.isNewUser && referrer && biz.setReferrer(ctx.from.id, referrer)) {
+    const pct = biz.refNewDiscount();
+    if (pct) refNote = "\n\n🤝 Siz do'stingiz taklifi bilan keldingiz — birinchi buyurtmangizga <b>"+pct+"% chegirma</b>!";
+    bot.api.sendMessage(referrer, "🤝 Havolangiz orqali yangi do'st qo'shildi: "+(ctx.from.first_name||"")+
+      ". U birinchi buyurtmasini to'lasa, balansingizga "+biz.fmt(biz.refBonus())+" "+currency()+" tushadi.").catch(() => {});
+  }
+  const freeNote = (isFree(ctx.from.id) ? "\n\n🎁 Sizda <b>bepul foydalanish</b> huquqi bor!" : "") + refNote;
   await ctx.reply(
     "Assalomu alaykum, "+esc(ctx.from.first_name||"do'st")+"! 👋\n\n"+
     "Men <b>taqdimot</b> (.pptx) va <b>mustaqil ish</b> (.docx) yaratuvchi botman.\n\n"+
@@ -184,6 +194,23 @@ bot.callbackQuery(/^myfile:(\d+)$/, async (ctx) => {
   await ctx.answerCallbackQuery();
   try { await ctx.replyWithDocument(order.file_id, { caption: "📌 " + order.topic }); }
   catch (_) { await ctx.reply("⚠️ Faylni yuborib bo'lmadi." + supportLine()); }
+});
+
+bot.hears("🤝 Do'st taklif qilish", async (ctx) => {
+  if (!biz.referralEnabled()) return ctx.reply("Taklif dasturi hozir o'chirilgan.");
+  const st = biz.referralStats(ctx.from.id);
+  const link = "https://t.me/"+ctx.me.username+"?start=ref_"+ctx.from.id;
+  const pct = biz.refNewDiscount(), bonus = biz.refBonus();
+  await ctx.reply(
+    "🤝 <b>Do'stlaringizni taklif qiling</b>\n\n"+
+    (bonus ? "Do'stingiz havolangiz orqali kelib, birinchi buyurtmasini to'lasa — balansingizga <b>"+biz.fmt(bonus)+" "+currency()+"</b> tushadi.\n" : "")+
+    (pct ? "Do'stingiz esa birinchi buyurtmasiga <b>"+pct+"% chegirma</b> oladi.\n" : "")+
+    "Balans keyingi buyurtmalaringizda avtomatik ishlatiladi.\n\n"+
+    "🔗 Sizning havolangiz:\n<code>"+esc(link)+"</code>\n\n"+
+    "👥 Taklif qilinganlar: "+st.invited+" · To'laganlar: "+st.paid+"\n"+
+    "💰 Balans: <b>"+biz.fmt(st.balance)+" "+currency()+"</b>",
+    { parse_mode:"HTML", reply_markup: new InlineKeyboard().url("📤 Ulashish", "https://t.me/share/url?url="+encodeURIComponent(link)+"&text="+encodeURIComponent("Taqdimot va mustaqil ishni bir necha daqiqada tayyorlaydigan bot 👇")) }
+  );
 });
 
 bot.hears("ℹ️ Yordam", async (ctx) => {
@@ -525,7 +552,7 @@ bot.callbackQuery(/^admo:(show|regen|resend|refund|file):(\d+)$/, async (ctx) =>
   }
   if (action === "refund") {
     db.updateOrder(id, { status: "refunded" });
-    try { biz.releasePromo(id); } catch (_) {}
+    try { biz.releasePromo(id); biz.releaseBalance(id); } catch (_) {}
     await ctx.answerCallbackQuery({ text: "Qaytarilgan deb belgilandi" });
     try { await bot.api.sendMessage(o.user_tg_id, "💸 Buyurtma #"+id+" uchun to'lovingiz qaytarildi. Noqulaylik uchun uzr so'raymiz."); } catch (_) {}
     return showOrder(ctx, id, true);
@@ -542,6 +569,8 @@ function userCardText(id) {
   return "👤 <b>Foydalanuvchi</b> <code>"+id+"</code>\n\n"+
     (u ? esc(u.first_name||"")+(u.username ? " @"+esc(u.username) : "")+"\n🕒 Qo'shilgan: "+date(u.created_at)+" · Oxirgi: "+date(u.last_seen)+"\n" : "⚠️ Botda ro'yxatdan o'tmagan\n")+
     "🧾 Buyurtmalar: "+s.orders+" (bajarilgan: "+s.paid+") · To'lagan: <b>"+biz.fmt(s.spent)+" "+currency()+"</b>\n"+
+    "💰 Bonus balans: "+biz.fmt(biz.getBalance(id))+" · 🤝 Taklif qilgan: "+biz.referralStats(id).invited+
+    (u && u.referred_by ? " · Uni taklif qilgan: <code>"+u.referred_by+"</code>" : "")+"\n"+
     (isAdmin(id) ? "🛠 Admin\n" : "")+(vip ? "🎁 VIP (bepul)\n" : "")+(banned ? "⛔️ Bloklangan\n" : "")+
     (last ? "\nOxirgi buyurtmalar:\n"+last : "");
 }
@@ -549,7 +578,7 @@ function userKb(id) {
   const kb = new InlineKeyboard()
     .text(db.isBanned(id) ? "✅ Blokdan chiqarish" : "⛔️ Bloklash", "admu:ban:"+id)
     .text(db.isFreeUser(id) ? "➖ VIP olish" : "🎁 VIP berish", "admu:vip:"+id).row()
-    .text("✉️ Xabar yozish","admu:msg:"+id).row();
+    .text("✉️ Xabar yozish","admu:msg:"+id).text("💰 Balans","admu:bal:"+id).row();
   db.listOrdersByUser(id, 4).forEach(o => kb.text("#"+o.id, "admo:show:"+o.id));
   return kb.row().text("⬅️ Admin panel","adm:back");
 }
@@ -563,7 +592,7 @@ bot.callbackQuery("adm:finduser", async (ctx) => {
   ctx.session.step = "admin_find_user"; await ctx.answerCallbackQuery();
   await ctx.reply("👤 Telegram ID yoki @username yuboring:");
 });
-bot.callbackQuery(/^admu:(show|ban|vip|msg):(\d+)$/, async (ctx) => {
+bot.callbackQuery(/^admu:(show|ban|vip|msg|bal):(\d+)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
   const [action, id] = [ctx.match[1], parseInt(ctx.match[2], 10)];
   if (action === "show") { await ctx.answerCallbackQuery(); return showUser(ctx, id, !ctx.callbackQuery.message?.photo); }
@@ -579,6 +608,11 @@ bot.callbackQuery(/^admu:(show|ban|vip|msg):(\d+)$/, async (ctx) => {
     else { db.addFreeUser(id, "", ctx.from.id); bot.api.sendMessage(id, "🎁 Sizga bepul foydalanish huquqi berildi! /start bosing.").catch(() => {}); }
     await ctx.answerCallbackQuery({ text: "Saqlandi ✅" });
     return showUser(ctx, id, true);
+  }
+  if (action === "bal") {
+    ctx.session.step = "admin_balance"; ctx.session.adminTarget = id;
+    await ctx.answerCallbackQuery();
+    return ctx.reply("💰 "+id+" balansi: "+biz.fmt(biz.getBalance(id))+"\n\nO'zgartirish: <code>+5000</code> yoki <code>-5000</code>", { parse_mode:"HTML" });
   }
   if (action === "msg") {
     ctx.session.step = "admin_msg_user"; ctx.session.adminTarget = id;
@@ -654,6 +688,10 @@ const EDITABLE_SETTINGS = {
   vip_daily_limit: { label: "🎁 VIP kunlik limit", hint: "VIP foydalanuvchi kuniga nechta bepul ish olishi mumkin. 0 = cheksiz", validate: (t) => /^\d{1,3}$/.test(t) },
   usd_rate: { label: "💱 Dollar kursi", hint: "1$ necha so'm (statistikada AI xarajatini hisoblash uchun)", validate: (t) => /^\d{3,6}$/.test(t) },
   daily_cost_alert_usd: { label: "💸 Kunlik AI xarajat chegarasi ($)", hint: "Oshsa adminlarga ogohlantirish keladi. 0 = o'chiq", validate: (t) => /^\d{1,4}(\.\d{1,2})?$/.test(t) },
+  ref_bonus: { label: "🤝 Taklif bonusi (so'm)", hint: "Do'st birinchi to'lovni qilganda taklif qilganga beriladigan bonus. 0 = bonus yo'q", validate: (t) => /^\d{1,7}$/.test(t) },
+  ref_new_discount: { label: "🤝 Yangi do'st chegirmasi (%)", hint: "Taklif orqali kelgan foydalanuvchining birinchi buyurtmasiga chegirma, 0–100", validate: (t) => /^\d{1,3}$/.test(t) && Number(t) <= 100 },
+  unpaid_remind_min: { label: "⏰ To'lov eslatmasi (daqiqa)", hint: "To'lanmagan buyurtma haqida necha daqiqadan keyin eslatilsin (5–720)", validate: (t) => /^\d{1,3}$/.test(t) && Number(t) >= 5 && Number(t) <= 720 },
+  unpaid_expire_hours: { label: "⌛️ Buyurtma muddati (soat)", hint: "To'lanmagan buyurtma necha soatdan keyin bekor qilinsin (1–168)", validate: (t) => /^\d{1,3}$/.test(t) && Number(t) >= 1 && Number(t) <= 168 },
   maintenance_text: { label: "🛠 Texnik ishlar matni", hint: "Texnik rejimda foydalanuvchiga ko'rsatiladigan matn. Standart: -", validate: (t) => t.length <= 500 },
 };
 function settingsText() {
@@ -661,6 +699,8 @@ function settingsText() {
   return "⚙️ <b>Sozlamalar</b>\n\n"+
     "🛠 Texnik ishlar rejimi: <b>"+(db.getSetting("maintenance","0")==="1" ? "YOQILGAN (foydalanuvchilar to'xtatilgan)" : "o'chiq")+"</b>\n"+
     "🔔 Yangi foydalanuvchi xabari: "+(db.getSetting("notify_new_users","0")==="1" ? "✅" : "❌")+"\n"+
+    "🤝 Taklif dasturi: "+(biz.referralEnabled() ? "✅ bonus "+biz.fmt(biz.refBonus())+", yangi do'stga "+biz.refNewDiscount()+"%" : "❌")+"\n"+
+    "⏰ To'lov eslatmasi: "+db.getSetting("unpaid_remind_min","30")+" daqiqadan keyin · bekor qilish: "+db.getSetting("unpaid_expire_hours","24")+" soatda\n"+
     "📞 Yordam kontakti: "+v("support_contact","—")+"\n"+
     "🎁 VIP kunlik limit: "+(biz.vipDailyLimit() || "cheksiz")+"\n"+
     "💱 1$ = "+biz.fmt(biz.usdRate())+" so'm\n"+
@@ -669,7 +709,7 @@ function settingsText() {
 function settingsKb() {
   const kb = new InlineKeyboard()
     .text(db.getSetting("maintenance","0")==="1" ? "🟢 Botni ochish" : "🛠 Texnik rejimni yoqish","adm:flag:maintenance").row()
-    .text("🔔 Yangi user xabari","adm:flag:notify_new_users").row();
+    .text("🔔 Yangi user xabari","adm:flag:notify_new_users").text("🤝 Taklif dasturi","adm:flag:referral_enabled").row();
   for (const [key, meta] of Object.entries(EDITABLE_SETTINGS)) kb.text(meta.label, "adm:set:"+key).row();
   return kb.text("⬅️ Orqaga","adm:back");
 }
@@ -678,9 +718,10 @@ bot.callbackQuery("adm:settings", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.editMessageText(settingsText(), { parse_mode:"HTML", reply_markup: settingsKb() });
 });
-bot.callbackQuery(/^adm:flag:(maintenance|notify_new_users)$/, async (ctx) => {
+bot.callbackQuery(/^adm:flag:(maintenance|notify_new_users|referral_enabled)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
-  const k = ctx.match[1]; db.setSetting(k, db.getSetting(k,"0")==="1" ? "0" : "1");
+  const k = ctx.match[1], def = k === "referral_enabled" ? "1" : "0";
+  db.setSetting(k, db.getSetting(k,def)==="1" ? "0" : "1");
   await ctx.answerCallbackQuery(db.getSetting(k)==="1" ? "Yoqildi" : "O'chirildi");
   await ctx.editMessageText(settingsText(), { parse_mode:"HTML", reply_markup: settingsKb() }).catch(() => {});
 });
@@ -951,6 +992,15 @@ bot.on("message:text", async (ctx) => {
     ctx.session.step = "idle";
     return ctx.reply(biz.deletePromo(text) ? "✅ O'chirildi" : "Bunday promokod yo'q");
   }
+  if (step === "admin_balance" && isAdmin(ctx.from.id)) {
+    const m = text.replace(/\s/g, "").match(/^([+-])(\d{1,8})$/);
+    if (!m) return ctx.reply("Format: <code>+5000</code> yoki <code>-5000</code>", { parse_mode:"HTML" });
+    const id = ctx.session.adminTarget, delta = (m[1] === "-" ? -1 : 1) * Number(m[2]);
+    if (!db.getUser(id)) db.upsertUser(id, "", "");
+    biz.addBalance(id, delta); ctx.session.step = "idle";
+    if (delta > 0) bot.api.sendMessage(id, "🎁 Balansingizga "+biz.fmt(delta)+" "+currency()+" qo'shildi. Keyingi buyurtmada avtomatik ishlatiladi.").catch(() => {});
+    return showUser(ctx, id, false);
+  }
   if (step === "admin_set" && isAdmin(ctx.from.id)) {
     const key = ctx.session.adminSetting, meta = EDITABLE_SETTINGS[key];
     if (!meta) { ctx.session.step = "idle"; return; }
@@ -1031,11 +1081,19 @@ function orderFields(ctx, d, extra) {
   };
 }
 // Promokodni buyurtmaga biriktiradi; poyga holatida limit tugagan bo'lsa false
+// Promokod, taklif chegirmasi va bonus balansni buyurtmaga biriktiradi; holat o'zgargan bo'lsa false
 function attachPromo(orderId, userId, d) {
-  if (!d.promoCode) return true;
-  const ok = biz.redeemPromo(d.promoCode, userId, orderId);
-  if (ok) db.updateOrder(orderId, { promo_code: d.promoCode, discount: d.discount || 0 });
-  return ok;
+  if (d.promoCode) {
+    if (!biz.redeemPromo(d.promoCode, userId, orderId)) return false;
+    db.updateOrder(orderId, { promo_code: d.promoCode, discount: d.discount || 0 });
+  } else if (d.refDiscount) {
+    db.updateOrder(orderId, { promo_code: "REF", discount: d.refDiscount });
+  }
+  if (d.balanceUse) {
+    const spent = biz.spendBalance(userId, orderId, d.balanceUse);
+    if (spent < d.balanceUse) { biz.releasePromo(orderId); biz.releaseBalance(orderId); return false; }
+  }
+  return true;
 }
 
 async function proceedToPayment(ctx) {
@@ -1049,6 +1107,15 @@ async function proceedToPayment(ctx) {
     if (chk.error) { await ctx.reply("⚠️ "+esc(chk.error)+" Promokod olib tashlandi."); d.promoCode = null; }
     else { amount = chk.final; d.discount = chk.discount; }
   }
+  // Taklif orqali kelgan do'stga birinchi buyurtma chegirmasi (promokod bilan birga qo'llanmaydi)
+  d.refDiscount = 0;
+  if (!isFree(ctx.from.id) && !d.promoCode) {
+    d.refDiscount = biz.referralDiscountFor(ctx.from.id, amount);
+    amount -= d.refDiscount;
+  }
+  // Bonus balans avtomatik ishlatiladi
+  d.balanceUse = isFree(ctx.from.id) ? 0 : Math.min(biz.getBalance(ctx.from.id), amount);
+  amount -= d.balanceUse;
   d.amount = amount;
 
   // VIP kunlik limiti (adminlarga taalluqli emas)
@@ -1060,17 +1127,17 @@ async function proceedToPayment(ctx) {
     }
   }
 
-  // 100% chegirmali promokod — to'lovsiz bajariladi
-  if (!isFree(ctx.from.id) && d.promoCode && amount === 0) {
-    const orderId = db.createOrder(orderFields(ctx, d, { amount: 0, status: "paid", payment_method: "promo" }));
+  // Chegirma/balans narxni to'liq qoplasa — to'lovsiz bajariladi
+  if (!isFree(ctx.from.id) && amount === 0 && (d.promoCode || d.balanceUse || d.refDiscount)) {
+    const orderId = db.createOrder(orderFields(ctx, d, { amount: 0, status: "paid", payment_method: d.balanceUse ? "balance" : "promo" }));
     if (!attachPromo(orderId, ctx.from.id, d)) {
-      db.updateOrder(orderId, { status: "rejected" });
+      biz.cancelOrder(orderId); db.updateOrder(orderId, { status: "cancelled" });
       d.promoCode = null;
-      await ctx.reply("⚠️ Promokod limiti hozirgina tugadi.");
+      await ctx.reply("⚠️ Promokod yoki balans holati o'zgardi — narx qayta hisoblandi.");
       return proceedToPayment(ctx);
     }
     ctx.session.step = "idle";
-    await ctx.reply("🎟 Promokod qo'llandi — to'lovsiz!\n\n📌 "+esc(d.topic)+"\n\nTayyorlanmoqda...", { parse_mode:"HTML" });
+    await ctx.reply((d.balanceUse ? "💰 Bonus balansdan to'landi!" : "🎟 Chegirma qo'llandi — to'lovsiz!")+"\n\n📌 "+esc(d.topic)+"\n\nTayyorlanmoqda...", { parse_mode:"HTML" });
     fulfill.fulfillOrder(orderId).catch((e)=>console.error(e));
     return;
   }
@@ -1102,7 +1169,10 @@ async function proceedToPayment(ctx) {
     (isMustaqil && d.university ? "🏛 "+esc(d.university)+"\n" : "")+
     (isMustaqil ? "📑 "+(d.includeToc ? "Mundarija bilan" : "Reja bilan")+"\n" : "")+
     "📎 Kontent: "+(d.has_content ? "yuklangan" : "AI yaratadi")+"\n\n"+
-    (d.discount ? "💰 Narx: <s>"+formatAmount(baseAmount)+"</s>\n🎟 "+esc(d.promoCode)+": −"+formatAmount(d.discount)+"\n" : "")+
+    (d.discount || d.refDiscount || d.balanceUse ? "💰 Narx: <s>"+formatAmount(baseAmount)+"</s>\n" : "")+
+    (d.discount ? "🎟 "+esc(d.promoCode)+": −"+formatAmount(d.discount)+"\n" : "")+
+    (d.refDiscount ? "🤝 Do'st taklifi chegirmasi: −"+formatAmount(d.refDiscount)+"\n" : "")+
+    (d.balanceUse ? "💰 Bonus balansdan: −"+formatAmount(d.balanceUse)+"\n" : "")+
     "💰 <b>To'lov: "+formatAmount(amount)+" "+currency()+"</b>\n\nTo'lov usuli:",
     { parse_mode:"HTML", reply_markup: methods }
   );
@@ -1124,9 +1194,9 @@ bot.callbackQuery(/^pay:(manual|click|payme)$/, async (ctx) => {
   ctx.session.step = "creating_order"; // ikki marta bosilsa ikkita buyurtma yaratilmasin
   const orderId = db.createOrder(orderFields(ctx, d, { amount: d.amount, status: "awaiting_payment", payment_method: method }));
   if (!attachPromo(orderId, ctx.from.id, d)) {
-    db.updateOrder(orderId, { status: "rejected" });
+    db.updateOrder(orderId, { status: "cancelled" });
     d.promoCode = null; ctx.session.step = "await_payment_method";
-    await ctx.reply("⚠️ Promokod limiti hozirgina tugadi — narx qayta hisoblandi.");
+    await ctx.reply("⚠️ Promokod yoki balans holati o'zgardi — narx qayta hisoblandi.");
     return proceedToPayment(ctx);
   }
   ctx.session.draft.orderId = orderId;
@@ -1229,7 +1299,7 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
   if (!order) return ctx.answerCallbackQuery({text:"Topilmadi",show_alert:true});
   if (["done","generating"].includes(order.status)) return ctx.answerCallbackQuery({text:"Buyurtma allaqachon bajarilgan",show_alert:true});
   db.updateOrder(orderId, { status:"rejected" });
-  try { biz.releasePromo(orderId); } catch (_) {}
+  try { biz.releasePromo(orderId); biz.releaseBalance(orderId); } catch (_) {}
   await ctx.answerCallbackQuery({text:"Rad etildi ❌"});
   const addText = "\n\n❌ RAD ETILDI (admin: "+ctx.from.id+")";
   try {
@@ -1240,11 +1310,54 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
   try { await bot.api.sendMessage(order.user_tg_id, "❌ Buyurtma #"+orderId+" bo'yicha to'lov tasdiqlanmadi (chek topilmadi yoki summa mos emas). Xato bo'lsa, administrator bilan bog'laning."+supportLine()); } catch(_){}
 });
 
+// ── TO'LANMAGAN BUYURTMA: eslatmadagi tugmalar ─────────────
+bot.callbackQuery(/^(rcpt|ocancel):(\d+)$/, async (ctx) => {
+  const id = parseInt(ctx.match[2], 10), o = db.getOrder(id);
+  if (!o || o.user_tg_id !== ctx.from.id || o.status !== "awaiting_payment")
+    return ctx.answerCallbackQuery({ text: "Bu buyurtma endi faol emas", show_alert: true });
+  await ctx.answerCallbackQuery();
+  if (ctx.match[1] === "ocancel") {
+    biz.cancelOrder(id);
+    return ctx.editMessageText("🚫 Buyurtma #"+id+" bekor qilindi.").catch(() => {});
+  }
+  ctx.session.step = "await_receipt"; ctx.session.draft = { orderId: id };
+  return ctx.reply("💳 <b>"+formatAmount(o.amount)+" "+currency()+"</b> ni kartaga o'tkazing:\n\n<code>"+esc(db.getSetting("card_number")||"—")+"</code>\n"+
+    esc(db.getSetting("card_holder")||"")+"\n\nSo'ng chek rasmini shu yerga yuboring.", { parse_mode:"HTML" });
+});
+
+async function runReminders() {
+  const { remind, expired, staleApprovals } = biz.dueReminders();
+  for (const o of remind) {
+    db.updateOrder(o.id, { reminded: 1 });
+    const kb = new InlineKeyboard();
+    if (o.payment_method === "manual") kb.text("📎 Chek yuborish","rcpt:"+o.id);
+    kb.text("❌ Bekor qilish","ocancel:"+o.id);
+    await bot.api.sendMessage(o.user_tg_id,
+      "⏰ Buyurtma #"+o.id+" («"+(o.topic||"").slice(0, 60)+"») to'lovi kutilmoqda — "+formatAmount(o.amount)+" "+currency()+".\n\n"+
+      (o.payment_method === "manual" ? "To'lov qilgan bo'lsangiz, chek rasmini yuboring." : "To'lovni yakunlasangiz, ish avtomatik tayyorlanadi."),
+      { reply_markup: kb }).catch(() => {});
+    await new Promise(r => setTimeout(r, 50));
+  }
+  for (const o of expired) {
+    if (biz.cancelOrder(o.id, "expired")) {
+      bot.api.sendMessage(o.user_tg_id, "⌛️ Buyurtma #"+o.id+" to'lanmagani uchun bekor qilindi. Istalgan vaqtda qaytadan buyurtma berishingiz mumkin.").catch(() => {});
+    }
+  }
+  // Admin: 30 daqiqadan ortiq tasdiq kutayotgan cheklar — 2 soatda bir marta eslatish
+  const lastAt = Number(db.getSetting("approval_remind_at", "0"));
+  if (staleApprovals > 0 && Date.now() - lastAt > 2 * 3600000) {
+    db.setSetting("approval_remind_at", Date.now());
+    fulfill.notifyAdmins("⏳ "+staleApprovals+" ta chek 30 daqiqadan beri tasdiq kutmoqda. Mijozlar kutyapti!",
+      { inline_keyboard: [[{ text: "📋 Ko'rish", callback_data: "adm:ord:pending" }]] });
+  }
+}
+
 // ── STATUS ─────────────────────────────────────────────────
 function statusLabel(s) {
   return ({draft:"qoralama",awaiting_payment:"⏳ to'lov kutilmoqda",awaiting_approval:"🔄 tasdiq kutilmoqda",
     paid:"💰 to'langan",generating:"⚙️ tayyorlanmoqda",done:"✅ tayyor",
-    rejected:"❌ rad",failed:"⚠️ xato",free:"🎁 bepul",refunded:"💸 qaytarilgan"})[s]||s;
+    rejected:"❌ rad",failed:"⚠️ xato",free:"🎁 bepul",refunded:"💸 qaytarilgan",
+    cancelled:"🚫 bekor qilingan",expired:"⌛️ muddati o'tgan"})[s]||s;
 }
 
 bot.catch((err) => { console.error("Bot xatosi:", err.error||err); });
@@ -1260,6 +1373,7 @@ async function main() {
   console.log("Super adminlar:", config.adminIds.join(", "));
   bot.start();
   // Oldingi ishga tushirishda yarim qolgan buyurtmalar (server restart) qayta tayyorlanadi
+  setInterval(() => runReminders().catch(e => console.error("[reminders]", e.message)), 5 * 60_000);
   setTimeout(() => fulfill.resumeStuckOrders(db.listOrdersByStatuses).then(count => {
     if (count) console.log(`[bot] ${count} ta yarim qolgan buyurtma davom ettirildi`);
   }), 5_000);

@@ -106,3 +106,48 @@ test("foydalanuvchi: blok, username bo'yicha qidiruv, sessiya saqlanishi", () =>
   db.sessionStorage.delete("100");
   assert.equal(db.sessionStorage.read("100"), undefined);
 });
+
+test("taklif tizimi: bog'lash, chegirma, bonus bir marta, balans sarfi va qaytarilishi", () => {
+  db.setSetting("ref_bonus", 5000); db.setSetting("ref_new_discount", 10);
+  db.upsertUser(500, "ref", "Ref"); db.upsertUser(501, "new", "New");
+  assert.equal(biz.parseStartPayload("ref_500"), 500);
+  assert.equal(biz.parseStartPayload("abc"), null);
+  assert.equal(biz.setReferrer(501, 501), false, "o'zini taklif qilolmaydi");
+  assert.equal(biz.setReferrer(501, 999999), false, "noma'lum taklifchi");
+  assert.equal(biz.setReferrer(501, 500), true);
+  assert.equal(biz.setReferrer(501, 500), false, "qayta bog'lanmaydi");
+
+  assert.equal(biz.referralDiscountFor(501, 50000), 5000);
+  const o = db.createOrder({ user_tg_id: 501, topic: "x", amount: 45000, currency: "so'm", status: "paid", payment_method: "manual" });
+  assert.equal(biz.referralDiscountFor(501, 50000), 0, "faqat birinchi buyurtmaga");
+  assert.deepEqual(biz.creditReferral(db.getOrder(o)), { referrer: 500, bonus: 5000 });
+  assert.equal(biz.creditReferral(db.getOrder(o)), null, "bonus bir marta");
+  assert.equal(biz.getBalance(500), 5000);
+  assert.deepEqual(biz.referralStats(500), { invited: 1, paid: 1, earned: 5000, balance: 5000 });
+
+  const o2 = db.createOrder({ user_tg_id: 500, topic: "y", amount: 45000, currency: "so'm", status: "awaiting_payment", payment_method: "manual" });
+  assert.equal(biz.spendBalance(500, o2, 8000), 5000, "balansdan ortiq yechilmaydi");
+  assert.equal(biz.getBalance(500), 0);
+  assert.equal(biz.cancelOrder(o2), true);
+  assert.equal(biz.getBalance(500), 5000, "bekor qilinsa balans qaytadi");
+  assert.equal(db.getOrder(o2).status, "cancelled");
+  assert.equal(biz.cancelOrder(o2), false);
+});
+
+test("to'lanmagan buyurtmalar: eslatma va muddati o'tganlar", () => {
+  db.setSetting("unpaid_remind_min", 30); db.setSetting("unpaid_expire_hours", 24);
+  const now = Date.now();
+  const fresh = db.createOrder({ user_tg_id: 600, topic: "a", amount: 1, currency: "so'm", status: "awaiting_payment", payment_method: "manual" });
+  const mid = db.createOrder({ user_tg_id: 600, topic: "b", amount: 1, currency: "so'm", status: "awaiting_payment", payment_method: "manual" });
+  const old = db.createOrder({ user_tg_id: 600, topic: "c", amount: 1, currency: "so'm", status: "awaiting_payment", payment_method: "manual" });
+  db.updateOrder(mid, { created_at: now - 60 * 60000 });
+  db.updateOrder(old, { created_at: now - 25 * 3600000 });
+  const due = biz.dueReminders(now);
+  const ids = (list) => list.map(o => o.id);
+  assert.ok(ids(due.remind).includes(mid));
+  assert.ok(!ids(due.remind).includes(fresh));
+  assert.ok(!ids(due.remind).includes(old));
+  assert.ok(ids(due.expired).includes(old));
+  db.updateOrder(mid, { reminded: 1 });
+  assert.ok(!ids(biz.dueReminders(now).remind).includes(mid), "ikki marta eslatilmaydi");
+});

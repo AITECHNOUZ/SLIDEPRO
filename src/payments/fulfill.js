@@ -65,6 +65,11 @@ async function fulfillOrder(orderId) {
   if (order.status === "done" || order.status === "generating") return;
 
   updateOrder(orderId, { status: "generating", paid_at: Date.now() });
+  // Taklif bonusi: do'st birinchi pullik buyurtmasini to'laganda
+  try {
+    const credited = require("../business").creditReferral(order);
+    if (credited) _bot.api.sendMessage(credited.referrer, `🎉 Do'stingiz birinchi buyurtmasini to'ladi — balansingizga ${require("../business").fmt(credited.bonus)} so'm qo'shildi!`).catch(() => {});
+  } catch (e) { console.error("[fulfill] referal xato:", e.message); }
   const key = cacheKey(order);
 
   // 1) KESH TEKSHIRUVI — bir xil ish avval yaratilganmi?
