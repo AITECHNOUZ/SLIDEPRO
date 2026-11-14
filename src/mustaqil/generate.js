@@ -53,6 +53,13 @@ const { verifyReferences, referenceVerificationEnabled } = require("./reference-
 const DEFAULT_LLM_CONCURRENCY = 3;
 const SLOT_RETRY_LIMIT = 2;
 
+// Bob uchun chiqish tokenlari: o'zbek matni ~2,7 token/so'z + JSON zaxirasi. Ortiqcha max_tokens
+// Tier 1 da chiqish limitini (OTPM) behuda band qiladi va boshqa so'rovlarni kuttiradi.
+function chapterTokenBudget(chapter) {
+  const words = Number(chapter?.word_target) || 600;
+  return Math.max(1500, Math.min(6000, Math.round(1000 + words * 3.2)));
+}
+
 function boundedConcurrency() {
   const requested = Number(process.env.SLIDEPRO_LLM_CONCURRENCY);
   return Number.isFinite(requested) && requested > 0
@@ -1371,7 +1378,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
               chapterIndex: index, totalChapters: outline.chapters.length,
               mediaSlots: slotsByChapter.get(chapter.id) || [], proseOnly: true,
             }),
-            llm, maxTokens: 6000,
+            llm, maxTokens: chapterTokenBudget(chapter),
           });
           const parsed = parseChapter(text);
           const content = normalizeChapterContent(chapter, parsed.content || [], chapterMainNumber(outline.chapters, index));
@@ -1489,7 +1496,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
                 chapterIndex: chIdx, totalChapters: outline.chapters.length,
                 mediaSlots: slotsByChapter.get(ch.id) || [], proseOnly: true,
               }),
-              llm, maxTokens: 6000,
+              llm, maxTokens: chapterTokenBudget(ch),
             });
             const p = parseChapter(t);
             const normalizedContent = normalizeChapterContent(ch, p.content || [], chapterMainNumber(outline.chapters, chIdx));

@@ -13,7 +13,28 @@ const { startPaymentStatus } = require("./mustaqil-progress");
 const { config } = require("../config");
 
 let _bot = null;
-function init(bot) { _bot = bot; }
+function init(bot) {
+  _bot = bot;
+  // LLM balansi tugasa yoki provayder ishlamasa adminlarga xabar
+  try { require("../llm/client").setProviderAlertHandler(text => notifyAdmins(`⚠️ ${text}`)); } catch (_) {}
+}
+
+// Bir vaqtda nechta mustaqil ish tayyorlanadi. Tier 1 limitlarida 1 ta eng tez:
+// navbatdagi foydalanuvchi kutadi, lekin ikkala ish ham sekinlashib qolmaydi.
+const MAX_PARALLEL_MUSTAQIL = Math.max(1, Number(process.env.MAX_PARALLEL_MUSTAQIL) || 1);
+let activeMustaqil = 0;
+const waitingMustaqil = [];
+async function acquireMustaqilSlot(onQueued) {
+  if (activeMustaqil < MAX_PARALLEL_MUSTAQIL) { activeMustaqil++; return; }
+  try { await onQueued?.(waitingMustaqil.length + 1); } catch (_) {}
+  await new Promise(resolve => waitingMustaqil.push(resolve));
+  activeMustaqil++;
+}
+function releaseMustaqilSlot() {
+  activeMustaqil = Math.max(0, activeMustaqil - 1);
+  const next = waitingMustaqil.shift();
+  if (next) next();
+}
 
 function slug(s) {
   return (s || "taqdimot").toLowerCase().replace(/[^a-z0-9\u0400-\u04FF]+/gi, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "taqdimot";
@@ -79,6 +100,9 @@ async function fulfillOrder(orderId) {
   try {
     let res;
     if (isMustaqil) {
+      await acquireMustaqilSlot(position => _bot.api.sendMessage(order.user_tg_id,
+        `🕒 Sizning mustaqil ishingiz navbatda (${position}-o'rin). Oldingi ish tugashi bilan avtomatik boshlanadi.`));
+      try {
       res = await withRetries(() => generateMustaqilIsh({ topic: order.topic, pages: order.pages || 15,
         language: order.language || "o\'zbek", studentName: order.student_name || "", studentGroup: order.student_group || "",
         org: "", supervisor: order.supervisor || "", university: order.university || "",
@@ -95,6 +119,9 @@ async function fulfillOrder(orderId) {
           notifyAdmins(`⚠️ #${orderId} ${attempt}-urinish xato, qayta uriniladi: ${String(error.message).slice(0, 300)}`);
         },
       });
+      } finally {
+        releaseMustaqilSlot();
+      }
       res.slideCount = order.pages || 15;
     } else {
       res = await generatePresentation({ topic: order.topic, slides: order.slides,

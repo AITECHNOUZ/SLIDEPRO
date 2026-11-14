@@ -13,7 +13,9 @@
 //     max_completion_tokens ichida fikrlash tokenlarini ham sarflaydi — shu hisobga olinadi.
 //   • 408/429/5xx uchun retry (llm-http), uzun javoblar uchun kattaroq timeout.
 
+const crypto = require("crypto");
 const { postJsonWithRetry } = require("../mustaqil/llm-http");
+const { sharedLimiter, estimateTokens } = require("./rate-limiter");
 
 const ANTHROPIC_URL = process.env.ANTHROPIC_BASE_URL
   ? `${process.env.ANTHROPIC_BASE_URL.replace(/\/+$/, "")}/v1/messages`
@@ -24,6 +26,42 @@ const OPENAI_URL = process.env.OPENAI_BASE_URL
 
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5";
 const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
+// Asosiy model band (529) yoki limitda bo'lsa — arzonroq va tezroq zaxira model (o'chirish: ANTHROPIC_FALLBACK_MODEL=off)
+const DEFAULT_ANTHROPIC_FALLBACK_MODEL = "claude-haiku-5-5";
+
+// ── Holat: balans tugashi va admin ogohlantirishi ──────────────
+let alertHandler = null;
+const lastAlertAt = new Map();
+function setProviderAlertHandler(fn) { alertHandler = typeof fn === "function" ? fn : null; }
+function alertOnce(key, text, everyMs = 30 * 60_000) {
+  const now = Date.now();
+  if (now - (lastAlertAt.get(key) || 0) < everyMs) return;
+  lastAlertAt.set(key, now);
+  console.error(`[llm] ${text}`);
+  try { alertHandler?.(text); } catch (_) {}
+}
+const disabledUntil = { anthropic: 0, openai: 0 };
+function isCreditError(error) {
+  return error && (error.status === 400 || error.status === 402 || error.status === 403)
+    && /credit balance|billing|insufficient_quota|quota|payment/i.test(`${error.message} ${error.body || ""}`);
+}
+
+function limiterEnabled() {
+  return !/^(0|off|false|no)$/i.test(String(process.env.ANTHROPIC_RATE_LIMITER || ""));
+}
+
+// Prompt-kesh: bir xil system prompt 5 daqiqa ichida qayta yuborilsa, keshdan o'qiladi va ITPM'ga kirmaydi
+const seenSystems = new Map();
+function systemCostTokens(system) {
+  if (!system) return 0;
+  const key = crypto.createHash("md5").update(String(system)).digest("hex");
+  const now = Date.now();
+  const last = seenSystems.get(key) || 0;
+  seenSystems.set(key, now);
+  const tokens = estimateTokens(system);
+  // Kesh faqat ~1024+ tokenli promptlarda ishlaydi
+  return now - last < 4 * 60_000 && tokens >= 1024 ? 0 : tokens;
+}
 const ANTHROPIC_MAX_OUTPUT = 32000;
 const OPENAI_MAX_OUTPUT = 64000;
 
@@ -63,7 +101,11 @@ class TruncatedResponseError extends Error {
 
 // ── Anthropic Claude ─────────────────────────────────────────
 async function callAnthropic({ system, user, apiKey, model, maxTokens, temperature }) {
-  const budget = Math.min(ANTHROPIC_MAX_OUTPUT, Math.max(256, Math.floor(maxTokens || 8000)));
+  const limiter = limiterEnabled() ? sharedLimiter() : null;
+  // max_tokens chiqish limitidan (OTPM) katta bo'lsa so'rov hech qachon sig'masdi — chegaralaymiz
+  const cap = limiter ? Math.min(ANTHROPIC_MAX_OUTPUT, limiter.maxOutputTokens()) : ANTHROPIC_MAX_OUTPUT;
+  const budget = Math.min(cap, Math.max(256, Math.floor(maxTokens || 8000)));
+  const inputEstimate = estimateTokens(user) + systemCostTokens(system) + 20;
   const body = {
     model: model || DEFAULT_ANTHROPIC_MODEL,
     max_tokens: budget,
@@ -83,7 +125,26 @@ async function callAnthropic({ system, user, apiKey, model, maxTokens, temperatu
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
-  }, "Anthropic", undefined, { timeoutMs: timeoutFor(budget), retries: intEnv("LLM_RETRIES", 4) });
+  }, "Anthropic", undefined, {
+    timeoutMs: timeoutFor(budget),
+    retries: intEnv("LLM_RETRIES", 5),
+    beforeAttempt: limiter ? () => limiter.acquire({ input: inputEstimate, output: budget }) : undefined,
+    afterAttempt: limiter ? ({ response, data, error, reservation, retryDelay }) => {
+      limiter.updateFromHeaders(response?.headers);
+      if (!reservation) return;
+      if (data?.usage) {
+        const usage = data.usage;
+        limiter.settle(reservation, {
+          input: (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0),
+          output: usage.output_tokens || 0,
+        });
+      } else {
+        // Xato: chiqish tokenlari sarflanmadi — band qilingan qism qaytariladi
+        limiter.settle(reservation, { output: 0 });
+        if (error?.status === 429 || error?.status === 529) limiter.pause(retryDelay || 5_000);
+      }
+    } : undefined,
+  });
 
   const text = (data.content || []).filter(block => block.type === "text").map(block => block.text).join("").trim();
   if (data.stop_reason === "max_tokens") throw new TruncatedResponseError("Anthropic", budget);
@@ -125,11 +186,32 @@ async function callOpenAI({ system, user, apiKey, model, maxTokens, json, temper
 }
 
 async function callProvider(name, args, cfg) {
+  if (disabledUntil[name] > Date.now()) throw new Error(`${name}: balans tugagan (vaqtincha o'chirilgan)`);
+  try {
+    return await callProviderModel(name, args, cfg, name === "anthropic" ? cfg.anthropicModel : cfg.openaiModel);
+  } catch (error) {
+    if (isCreditError(error)) {
+      disabledUntil[name] = Date.now() + 15 * 60_000;
+      alertOnce(`credit:${name}`, `${name === "anthropic" ? "Claude (Anthropic)" : "OpenAI"} balansi tugadi yoki to'lov muammosi: ${String(error.message).slice(0, 200)}. Balansni to'ldiring — hozircha zaxira provayder ishlatiladi.`);
+      throw error;
+    }
+    // Asosiy model band/limitda: zaxira modelga bir marta o'tamiz
+    const fallbackModel = String(process.env.ANTHROPIC_FALLBACK_MODEL ?? DEFAULT_ANTHROPIC_FALLBACK_MODEL).trim();
+    const overloaded = error.status === 529 || error.status === 429 || error.status >= 500 || /overloaded|timeout|tugamadi/i.test(error.message);
+    if (name === "anthropic" && overloaded && fallbackModel && !/^off$/i.test(fallbackModel) && fallbackModel !== cfg.anthropicModel) {
+      console.warn(`[llm] ${cfg.anthropicModel} ishlamadi (${error.message.slice(0, 120)}); zaxira model ${fallbackModel}`);
+      return callProviderModel(name, args, cfg, fallbackModel);
+    }
+    throw error;
+  }
+}
+
+async function callProviderModel(name, args, cfg, model) {
   const fn = name === "anthropic" ? callAnthropic : callOpenAI;
   const base = {
     ...args,
     apiKey: name === "anthropic" ? cfg.anthropicKey : cfg.openaiKey,
-    model: name === "anthropic" ? cfg.anthropicModel : cfg.openaiModel,
+    model,
   };
   try {
     return await fn(base);
@@ -174,6 +256,8 @@ async function complete({ system, user, maxTokens = 8000, json = true, temperatu
 
 module.exports = {
   complete,
+  setProviderAlertHandler,
+  isCreditError,
   providerOrder,
   isOpenAIReasoningModel,
   DEFAULT_ANTHROPIC_MODEL,
