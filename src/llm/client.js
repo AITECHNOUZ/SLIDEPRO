@@ -1,7 +1,7 @@
 // src/llm/client.js
 // Yagona LLM klienti: faqat Anthropic Claude (Messages API) va OpenAI (Chat Completions).
 //
-//   provider = "anthropic" | "openai" | "both"
+//   provider = "anthropic" | "openai" | "deepseek" | "zai" | kaskad rejimlari (claude_*)
 //   "both" — avval Claude, xato yoki bo'sh javob bo'lsa avtomatik OpenAI (failover).
 //
 // Imkoniyatlar:
@@ -26,10 +26,38 @@ const OPENAI_URL = process.env.OPENAI_BASE_URL
   ? `${process.env.OPENAI_BASE_URL.replace(/\/+$/, "")}/chat/completions`
   : "https://api.openai.com/v1/chat/completions";
 
+const base = (env, def) => (process.env[env] || def).replace(/\/+$/, "");
+const DEEPSEEK_URL = `${base("DEEPSEEK_BASE_URL", "https://api.deepseek.com")}/chat/completions`;
+const ZAI_URL = `${base("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")}/chat/completions`;
+
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5-5";
 const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
 // Asosiy model band (529) yoki limitda bo'lsa — arzonroq va tezroq zaxira model (o'chirish: ANTHROPIC_FALLBACK_MODEL=off)
 const DEFAULT_ANTHROPIC_FALLBACK_MODEL = "claude-haiku-5-5";
+
+// ── Provayderlar reyestri ─────────────────────────────────────
+// deepseek va zai (GLM) — OpenAI bilan mos (chat/completions) API; kalit/model maydonlari llm sozlamasida.
+const PROVIDERS = {
+  anthropic: { label: "Claude", key: "anthropicKey", model: "anthropicModel", cheap: "anthropicCheapModel",
+    env: "ANTHROPIC_MODEL", def: DEFAULT_ANTHROPIC_MODEL, cheapEnv: "ANTHROPIC_CHEAP_MODEL", cheapDef: "claude-haiku-5-5" },
+  openai: { label: "OpenAI", key: "openaiKey", model: "openaiModel", cheap: "openaiCheapModel",
+    env: "OPENAI_MODEL", def: DEFAULT_OPENAI_MODEL, cheapEnv: "OPENAI_CHEAP_MODEL", cheapDef: DEFAULT_OPENAI_MODEL },
+  deepseek: { label: "DeepSeek", key: "deepseekKey", model: "deepseekModel", cheap: "deepseekCheapModel",
+    env: "DEEPSEEK_MODEL", def: "deepseek-v4-pro", cheapEnv: "DEEPSEEK_CHEAP_MODEL", cheapDef: "deepseek-flash", url: () => DEEPSEEK_URL },
+  zai: { label: "GLM (Z.ai)", key: "zaiKey", model: "zaiModel", cheap: "zaiCheapModel",
+    env: "ZAI_MODEL", def: "glm-5.3", cheapEnv: "ZAI_CHEAP_MODEL", cheapDef: "glm-5.3-flash", url: () => ZAI_URL },
+};
+const PROVIDER_NAMES = Object.keys(PROVIDERS);
+function providerModel(llm = {}, name) {
+  const p = PROVIDERS[name];
+  return (p && (llm[p.model] || process.env[p.env] || (name === "anthropic" && process.env.MODEL) || p.def)) || "";
+}
+function providerCheapModel(llm = {}, name) {
+  const p = PROVIDERS[name];
+  return (p && (llm[p.cheap] || process.env[p.cheapEnv] || p.cheapDef)) || "";
+}
+function hasKey(llm = {}, name) { const p = PROVIDERS[name]; return !!(p && llm[p.key]); }
+function withModel(llm, name, model, extra = {}) { return { ...llm, provider: name, [PROVIDERS[name].model]: model, ...extra }; }
 
 // ── Holat: balans tugashi va admin ogohlantirishi ──────────────
 let alertHandler = null;
@@ -42,15 +70,14 @@ function alertOnce(key, text, everyMs = 30 * 60_000) {
   console.error(`[llm] ${text}`);
   try { alertHandler?.(text); } catch (_) {}
 }
-const disabledUntil = { anthropic: 0, openai: 0 };
+const disabledUntil = {};
 function resetProviderState() {
-  disabledUntil.anthropic = 0;
-  disabledUntil.openai = 0;
+  for (const k of Object.keys(disabledUntil)) delete disabledUntil[k];
   lastAlertAt.clear();
 }
 function isCreditError(error) {
-  return error && (error.status === 400 || error.status === 402 || error.status === 403)
-    && /credit balance|billing|insufficient_quota|quota|payment/i.test(`${error.message} ${error.body || ""}`);
+  return error && (error.status === 400 || error.status === 402 || error.status === 403 || error.status === 429)
+    && /credit balance|billing|insufficient_quota|insufficient balance|quota|payment|arrears|余额|欠费/i.test(`${error.message} ${error.body || ""}`);
 }
 
 function modelClass(model) {
@@ -90,19 +117,20 @@ function timeoutFor(maxTokens) {
 }
 
 function providerOrder(provider, cfg) {
-  // Asosiy provayder yiqilsa (overload, limit, refusal) ikkinchi kalit bo'lsa zaxira sifatida ishlatiladi —
+  // Asosiy provayder yiqilsa (overload, limit, refusal) Claude/OpenAI kaliti bo'lsa darhol zaxira sifatida ishlatiladi —
   // foydalanuvchi baribir hujjat olishi kerak. LLM_STRICT_PROVIDER=1 bo'lsa faqat tanlangan provayder.
+  // DeepSeek/GLM bu yerda avtomatik qo'shilmaydi — ular zaxira zanjirida (fallbackChain) ishlatiladi.
   const strict = /^(1|true|yes)$/i.test(String(process.env.LLM_STRICT_PROVIDER || ""));
-  const order = provider === "openai" ? (strict ? ["openai"] : ["openai", "anthropic"])
-    : provider === "anthropic" ? (strict ? ["anthropic"] : ["anthropic", "openai"])
-      : ["anthropic", "openai"];
-  return order.filter(name => (name === "anthropic" && cfg.anthropicKey) || (name === "openai" && cfg.openaiKey));
+  const primary = PROVIDERS[provider] ? provider : "anthropic";
+  const order = strict ? [primary] : [primary, ...["anthropic", "openai"].filter(name => name !== primary)];
+  return order.filter(name => hasKey(cfg, name));
 }
 
 // OpenAI reasoning modellari: gpt-5*, o1/o3/o4*
 // Eski modellarning chiqish tokeni chegarasi (undan katta max_tokens 400 xato beradi)
 function modelOutputCap(provider, model) {
   const name = String(model || "").toLowerCase();
+  if (provider === "deepseek" || provider === "zai") return Number(process.env.COMPAT_MAX_OUTPUT) || 32000;
   if (provider === "anthropic") {
     if (/claude-3-(haiku|opus|sonnet)/.test(name)) return 4096;
     if (/claude-3-5/.test(name)) return 8192;
@@ -186,7 +214,8 @@ async function callAnthropic({ system, user, apiKey, model, maxTokens, temperatu
 }
 
 // ── OpenAI ───────────────────────────────────────────────────
-async function callOpenAI({ system, user, apiKey, model, maxTokens, json, temperature }) {
+async function callOpenAI({ system, user, apiKey, model, maxTokens, json, temperature, provider = "openai" }) {
+  if (provider !== "openai") return callCompat({ system, user, apiKey, model, maxTokens, json, temperature, provider });
   const chosenModel = model || DEFAULT_OPENAI_MODEL;
   const reasoning = isOpenAIReasoningModel(chosenModel);
   // Reasoning modellar fikrlash tokenlarini ham shu budjetdan sarflaydi — zaxira qo'shamiz.
@@ -220,14 +249,43 @@ async function callOpenAI({ system, user, apiKey, model, maxTokens, json, temper
   return text;
 }
 
+// ── DeepSeek / GLM (OpenAI bilan mos chat/completions) ──────────
+async function callCompat({ system, user, apiKey, model, maxTokens, json, temperature, provider }) {
+  const p = PROVIDERS[provider];
+  const chosenModel = model || p.def;
+  const budget = Math.min(modelOutputCap(provider, chosenModel), Math.max(256, Math.floor(maxTokens || 8000)));
+  const messages = [];
+  if (system) messages.push({ role: "system", content: String(system) });
+  messages.push({ role: "user", content: String(user || "") });
+  const body = { model: chosenModel, max_tokens: budget, messages,
+    temperature: Number.isFinite(temperature) ? temperature : 0.7 };
+  if (json) body.response_format = { type: "json_object" };
+  // GLM: chuqur fikrlash JSON/matn uchun shart emas — tezroq va arzon (ZAI_THINKING=enabled bilan yoqiladi)
+  if (provider === "zai") body.thinking = { type: process.env.ZAI_THINKING || "disabled" };
+
+  const data = await postJsonWithRetry(p.url(), {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  }, p.label, undefined, { timeoutMs: timeoutFor(budget), retries: intEnv("LLM_RETRIES", 4) });
+
+  if (data?.usage) recordUsage(chosenModel, data.usage.prompt_tokens || 0, data.usage.completion_tokens || 0);
+  const choice = data.choices && data.choices[0];
+  const message = choice && choice.message;
+  const text = String((message && message.content) || "").trim();
+  if (choice && choice.finish_reason === "length") throw new TruncatedResponseError(p.label, budget);
+  if (choice && choice.finish_reason === "sensitive") throw new Error(`${p.label}: javob kontent filtri bilan to'xtatildi`);
+  return text;
+}
+
 async function callProvider(name, args, cfg) {
   if (disabledUntil[name] > Date.now()) throw new Error(`${name}: balans tugagan (vaqtincha o'chirilgan)`);
   try {
-    return await callProviderModel(name, args, cfg, name === "anthropic" ? cfg.anthropicModel : cfg.openaiModel);
+    return await callProviderModel(name, args, cfg, providerModel(cfg, name));
   } catch (error) {
     if (isCreditError(error)) {
       disabledUntil[name] = Date.now() + 15 * 60_000;
-      alertOnce(`credit:${name}`, `${name === "anthropic" ? "Claude (Anthropic)" : "OpenAI"} balansi tugadi yoki to'lov muammosi: ${String(error.message).slice(0, 200)}. Balansni to'ldiring — hozircha zaxira provayder ishlatiladi.`);
+      alertOnce(`credit:${name}`, `${PROVIDERS[name] ? PROVIDERS[name].label : name} balansi tugadi yoki to'lov muammosi: ${String(error.message).slice(0, 200)}. Balansni to'ldiring — hozircha zaxira provayder ishlatiladi.`);
       throw error;
     }
     // Asosiy model band/limitda: zaxira modelga bir marta o'tamiz
@@ -245,15 +303,16 @@ async function callProviderModel(name, args, cfg, model) {
   const fn = name === "anthropic" ? callAnthropic : callOpenAI;
   const base = {
     ...args,
-    apiKey: name === "anthropic" ? cfg.anthropicKey : cfg.openaiKey,
+    apiKey: cfg[PROVIDERS[name].key],
     model,
+    provider: name,
   };
   try {
     return await fn(base);
   } catch (error) {
     // Kesilgan javob: budjetni ikki baravar oshirib bir marta qayta urinamiz.
     if (!error.truncated) throw error;
-    const cap = name === "anthropic" ? ANTHROPIC_MAX_OUTPUT : OPENAI_MAX_OUTPUT;
+    const cap = name === "anthropic" ? ANTHROPIC_MAX_OUTPUT : modelOutputCap(name, model);
     const bigger = Math.min(cap, Math.floor((args.maxTokens || 8000) * 2));
     if (bigger <= (args.maxTokens || 8000)) throw error;
     console.warn(`[llm] ${error.message}; ${bigger} token bilan qayta so'ralmoqda`);
@@ -267,16 +326,12 @@ async function callProviderModel(name, args, cfg, model) {
  */
 async function complete({ system, user, maxTokens = 8000, json = true, temperature, llm: requested = {} }) {
   const llm = effectiveLlm(requested);
-  const cfg = {
-    anthropicKey: llm.anthropicKey,
-    anthropicModel: llm.anthropicModel || process.env.ANTHROPIC_MODEL || process.env.MODEL || DEFAULT_ANTHROPIC_MODEL,
-    openaiKey: llm.openaiKey,
-    openaiModel: llm.openaiModel || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
-  };
-  const provider = llm.provider === "claude_openai" ? "anthropic" : llm.provider === "claude_claude" ? "anthropic" : llm.provider;
+  const cfg = {};
+  for (const name of PROVIDER_NAMES) { cfg[PROVIDERS[name].key] = llm[PROVIDERS[name].key]; cfg[PROVIDERS[name].model] = providerModel(llm, name); }
+  const provider = /^claude_/.test(String(llm.provider)) || llm.provider === "both" || !llm.provider ? "anthropic" : llm.provider;
   const available = llm.strict ? providerOrder(provider, cfg).filter(name => name === provider) : providerOrder(provider, cfg);
   if (!available.length) {
-    throw new Error("LLM kaliti topilmadi: ANTHROPIC_API_KEY yoki OPENAI_API_KEY o'rnating (tanlangan provayder uchun).");
+    throw new Error("LLM kaliti topilmadi: tanlangan provayder uchun API kalitini o'rnating (ANTHROPIC/OPENAI/DEEPSEEK/ZAI_API_KEY).");
   }
   const errors = [];
   for (const name of available) {
@@ -284,7 +339,7 @@ async function complete({ system, user, maxTokens = 8000, json = true, temperatu
       const text = await callProvider(name, { system, user, maxTokens, json, temperature }, cfg);
       if (!text) throw new Error("bo'sh javob");
       const okState = fallbackState(); if (okState) okState.pendingApiFailure = false;
-      return { text, provider: name, model: name === "anthropic" ? cfg.anthropicModel : cfg.openaiModel };
+      return { text, provider: name, model: providerModel(cfg, name) };
     } catch (error) {
       errors.push(`${name}: ${error.message}`);
     }
@@ -303,15 +358,13 @@ async function complete({ system, user, maxTokens = 8000, json = true, temperatu
 const FALLBACK_AFTER_FAILURES = 3;
 const fallbackStorage = new AsyncLocalStorage();
 
-function mainModelOf(llm, provider) {
-  return provider === "anthropic"
-    ? (llm.anthropicModel || process.env.ANTHROPIC_MODEL || process.env.MODEL || DEFAULT_ANTHROPIC_MODEL)
-    : (llm.openaiModel || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL);
-}
+function mainModelOf(llm, provider) { return providerModel(llm, provider); }
 function primaryProviderOf(llm = {}) {
-  if (llm.provider === "openai") return "openai";
-  if (llm.provider === "claude_openai" && !llm.anthropicKey) return "openai";
-  return llm.anthropicKey ? "anthropic" : "openai";
+  if (PROVIDERS[llm.provider] && llm.provider !== "anthropic") return llm.provider;
+  if (hasKey(llm, "anthropic")) return "anthropic";
+  const cheap = CASCADE_MODES[llm.provider];
+  if (cheap && hasKey(llm, cheap)) return cheap;
+  return PROVIDER_NAMES.find(name => hasKey(llm, name)) || "anthropic";
 }
 
 // "openai:gpt-5, anthropic:claude-opus-5-5" yoki ["openai:gpt-5"] → [{provider, model}]
@@ -319,9 +372,10 @@ function parseFallbackModels(value) {
   const items = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
   return items.map(item => {
     if (item && typeof item === "object") return item;
-    const m = String(item).trim().match(/^(anthropic|claude|openai|gpt):([A-Za-z0-9._:-]{2,80})$/i);
+    const m = String(item).trim().match(/^(anthropic|claude|openai|gpt|deepseek|zai|glm):([A-Za-z0-9._:-]{2,80})$/i);
     if (!m) return null;
-    return { provider: /^(anthropic|claude)$/i.test(m[1]) ? "anthropic" : "openai", model: m[2] };
+    const alias = { claude: "anthropic", gpt: "openai", glm: "zai" };
+    return { provider: alias[m[1].toLowerCase()] || m[1].toLowerCase(), model: m[2] };
   }).filter(Boolean);
 }
 
@@ -332,29 +386,28 @@ function fallbackChain(llm = {}) {
   const used = new Set([`${primary}:${mainModelOf(llm, primary)}`]);
   let candidates = parseFallbackModels(llm.fallbackModels);
   if (!candidates.length) {
-    const other = primary === "anthropic" ? "openai" : "anthropic";
     const claudeMain = mainModelOf(llm, "anthropic");
     candidates = [
-      { provider: other, model: mainModelOf(llm, other) },
+      // avval boshqa yirik provayder (Claude ↔ OpenAI), so'ng boshqa modellar, oxirida DeepSeek va GLM
+      ...["anthropic", "openai"].filter(name => name !== primary).map(name => ({ provider: name, model: mainModelOf(llm, name) })),
       { provider: "anthropic", model: /opus/i.test(claudeMain) ? "claude-sonnet-5-5" : "claude-opus-5-5" },
       { provider: "openai", model: /^gpt-5$/i.test(mainModelOf(llm, "openai")) ? "gpt-5-mini" : "gpt-5" },
+      ...["deepseek", "zai"].filter(name => name !== primary).map(name => ({ provider: name, model: mainModelOf(llm, name) })),
       { provider: "anthropic", model: "claude-haiku-5-5" },
     ];
   }
-  const keyOk = c => (c.provider === "anthropic" ? llm.anthropicKey : llm.openaiKey);
+  const keyOk = c => hasKey(llm, c.provider);
   const out = [];
   for (const c of candidates) {
     const id = `${c.provider}:${c.model}`;
     if (!keyOk(c) || used.has(id)) continue;
     used.add(id); out.push(c);
   }
-  return out.slice(0, Math.max(0, Number(llm.maxFallbacks ?? 3)));
+  return out.slice(0, Math.max(0, Number(llm.maxFallbacks ?? 4)));
 }
 
 function fallbackLlm(llm, step) {
-  return step.provider === "anthropic"
-    ? { ...llm, provider: "anthropic", anthropicModel: step.model, tier: "fallback", strict: true }
-    : { ...llm, provider: "openai", openaiModel: step.model, tier: "fallback", strict: true };
+  return withModel(llm, step.provider, step.model, { tier: "fallback", strict: true });
 }
 
 // Butun ish (buyurtma) davomida zaxira holatini saqlash
@@ -399,33 +452,22 @@ function reportSuccess() {
 //   claude_openai  — avval arzon OpenAI modeli (2 urinish), keyin qimmat Claude
 //   claude_claude  — avval arzon Claude modeli (Haiku, 2 urinish), keyin qimmat Claude (Sonnet)
 //   both (eski)    — Claude, xato bo'lsa OpenAI (claude_openai kabi emas, oddiy zaxira)
-const LLM_MODES = ["anthropic", "openai", "claude_openai", "claude_claude"];
+const LLM_MODES = ["anthropic", "openai", "deepseek", "zai", "claude_openai", "claude_claude", "claude_deepseek", "claude_glm"];
+// Kaskad rejimi → arzon bosqich provayderi (qimmat bosqich doim Claude asosiy modeli)
+const CASCADE_MODES = { claude_openai: "openai", claude_claude: "anthropic", claude_deepseek: "deepseek", claude_glm: "zai" };
 const CHEAP_ATTEMPTS = 2;
 
-function cheapAnthropicModel() {
-  return process.env.ANTHROPIC_CHEAP_MODEL || DEFAULT_ANTHROPIC_FALLBACK_MODEL;
-}
-function cheapOpenAIModel() {
-  return process.env.OPENAI_CHEAP_MODEL || DEFAULT_OPENAI_MODEL;
-}
+function cheapAnthropicModel() { return providerCheapModel({}, "anthropic"); }
+function cheapOpenAIModel() { return providerCheapModel({}, "openai"); }
 
 // Rejim bo'yicha urinishlar zanjiri: [{provider, model, tier}]
 function cascadePlan(llm = {}) {
-  const mode = llm.provider;
-  const mainClaude = llm.anthropicModel || process.env.ANTHROPIC_MODEL || process.env.MODEL || DEFAULT_ANTHROPIC_MODEL;
-  if (mode === "claude_openai" && llm.openaiKey && llm.anthropicKey) {
-    return [
-      ...Array(CHEAP_ATTEMPTS).fill({ provider: "openai", model: llm.openaiCheapModel || cheapOpenAIModel(), tier: "cheap" }),
-      { provider: "anthropic", model: mainClaude, tier: "main" },
-    ];
-  }
-  if (mode === "claude_claude" && llm.anthropicKey) {
-    return [
-      ...Array(CHEAP_ATTEMPTS).fill({ provider: "anthropic", model: llm.anthropicCheapModel || cheapAnthropicModel(), tier: "cheap" }),
-      { provider: "anthropic", model: mainClaude, tier: "main" },
-    ];
-  }
-  return null;
+  const cheapProvider = CASCADE_MODES[llm.provider];
+  if (!cheapProvider || !hasKey(llm, "anthropic") || !hasKey(llm, cheapProvider)) return null;
+  return [
+    ...Array(CHEAP_ATTEMPTS).fill({ provider: cheapProvider, model: providerCheapModel(llm, cheapProvider), tier: "cheap" }),
+    { provider: "anthropic", model: providerModel(llm, "anthropic"), tier: "main" },
+  ];
 }
 
 // Urinishlar soni: kaskad rejimida kamida 3 (2 arzon + 1 qimmat)
@@ -438,14 +480,12 @@ function attemptsFor(llm, base = 1) {
 function llmForAttempt(llm = {}, attempt = 1) {
   const plan = cascadePlan(llm);
   if (!plan) {
-    if (llm.provider === "claude_openai") return { ...llm, provider: llm.anthropicKey ? "anthropic" : "openai" };
-    if (llm.provider === "claude_claude") return { ...llm, provider: "anthropic" };
+    const cheap = CASCADE_MODES[llm.provider];
+    if (cheap) return { ...llm, provider: hasKey(llm, "anthropic") ? "anthropic" : cheap };
     return llm;
   }
   const step = plan[Math.min(plan.length, Math.max(1, attempt)) - 1];
-  return step.provider === "anthropic"
-    ? { ...llm, provider: "anthropic", anthropicModel: step.model, tier: step.tier }
-    : { ...llm, provider: "openai", openaiModel: step.model, tier: step.tier };
+  return withModel(llm, step.provider, step.model, { tier: step.tier });
 }
 
 // Tekshiruvli chaqiruv: javob validate()dan o'tmasa yoki xato bo'lsa keyingi (qimmatroq) urinish
@@ -494,7 +534,7 @@ async function completeValidated({ validate = text => text, attempts = 1, ...arg
 async function testModel({ provider, model, apiKey }) {
   const started = Date.now();
   const fn = provider === "anthropic" ? callAnthropic : callOpenAI;
-  const text = await fn({ system: "", user: 'Faqat JSON qaytar: {"ok":true}', apiKey, model, maxTokens: 64 });
+  const text = await fn({ system: "", user: 'Faqat JSON qaytar: {"ok":true}', apiKey, model, maxTokens: 64, provider });
   return { ok: /ok/i.test(text), text: String(text).slice(0, 80), ms: Date.now() - started };
 }
 
@@ -514,6 +554,10 @@ module.exports = {
   attemptsFor,
   llmForAttempt,
   LLM_MODES,
+  CASCADE_MODES,
+  PROVIDERS,
+  providerModel,
+  providerCheapModel,
   setProviderAlertHandler,
   isCreditError,
   resetProviderState,

@@ -8,6 +8,10 @@ const storage = new AsyncLocalStorage();
 const PRICES = [
   [/haiku-5-5/, 0.10, 0.50], [/sonnet-5-5/, 2, 10], [/opus-5-5/, 4, 20],
   [/sonnet-5(?!-5)/, 2, 10], [/opus-5(?!-5)/, 5, 25], [/haiku-4-5/, 1, 5], [/sonnet-4/, 3, 15], [/opus-4/, 5, 25],
+  // DeepSeek (band soatlar narxi — ehtiyotkor hisob; bo'sh soatlarda 2 baravar arzon), GLM (Z.ai)
+  [/deepseek-(v4-)?flash/, 0.30, 1.20], [/deepseek-v4-pro/, 1.32, 3.96],
+  [/glm-5\.3-flashx/, 0.37, 1.25], [/glm-5\.3-flash/, 0.15, 0.50], [/glm-5\.3/, 1.40, 4.40], [/glm-5\.[12]/, 1.40, 4.40],
+  [/glm-5(?![.\d])/, 1.00, 3.20], [/glm-4\.[57]-flash/, 0, 0], [/glm-4\.7/, 0.60, 2.20],
   [/gpt-5-nano/, 0.05, 0.40], [/gpt-5-mini/, 0.25, 2], [/^gpt-5$/, 1.25, 10], [/gpt-4o-mini/, 0.15, 0.60], [/gpt-4\.1-mini/, 0.40, 1.60], [/gpt-4\.1-nano/, 0.10, 0.40],
 ];
 

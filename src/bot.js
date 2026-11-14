@@ -314,40 +314,53 @@ bot.callbackQuery(/^adm:toggle:(manual_enabled|click_enabled|payme_enabled)$/, a
 });
 
 // --- AI rejimi (Taqdimot va Mustaqil ish) ---
-// Rejimlar: faqat Claude | faqat OpenAI | Claude+OpenAI (arzon GPT → qimmat Claude) | Claude+Claude (Haiku → Sonnet)
+// Rejimlar: bitta provayder (Claude / OpenAI / DeepSeek / GLM) yoki kaskad (arzon model → qimmat Claude).
 // Kaskad rejimlarida avval arzon model ishlaydi; u 2 marta xato qilsa (javob formati buzilsa yoki API xatosi) qimmat model chaqiriladi.
 const MODE_LABELS = {
   anthropic: "Faqat Claude",
   openai: "Faqat OpenAI",
+  deepseek: "Faqat DeepSeek",
+  zai: "Faqat GLM (Z.ai)",
   claude_openai: "Claude + OpenAI (arzon GPT → Claude)",
   claude_claude: "Claude + Claude (arzon → qimmat model)",
+  claude_deepseek: "Claude + DeepSeek (arzon DeepSeek → Claude)",
+  claude_glm: "Claude + GLM (arzon GLM → Claude)",
+};
+// Provayderlar: kalit, standart modellar va admin sozlamasi kalitlari
+const AI_PROVIDERS = {
+  anthropic: { label: "Claude", key: () => config.anthropicApiKey, main: () => config.model, cheap: () => process.env.ANTHROPIC_CHEAP_MODEL || "claude-haiku-5-5", env: "ANTHROPIC_API_KEY" },
+  openai: { label: "OpenAI", key: () => config.openaiApiKey, main: () => config.openaiModel, cheap: () => process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini", env: "OPENAI_API_KEY" },
+  deepseek: { label: "DeepSeek", key: () => config.deepseekApiKey, main: () => config.deepseekModel, cheap: () => process.env.DEEPSEEK_CHEAP_MODEL || "deepseek-flash", env: "DEEPSEEK_API_KEY" },
+  zai: { label: "GLM", key: () => config.zaiApiKey, main: () => config.zaiModel, cheap: () => process.env.ZAI_CHEAP_MODEL || "glm-5.3-flash", env: "ZAI_API_KEY" },
 };
 function modelSettings() {
-  return {
-    anthropicMain: db.getSetting("anthropic_main_model", "") || config.model,
-    anthropicCheap: db.getSetting("anthropic_cheap_model", "") || process.env.ANTHROPIC_CHEAP_MODEL || "claude-haiku-5-5",
-    openaiMain: db.getSetting("openai_main_model", "") || config.openaiModel,
-    openaiCheap: db.getSetting("openai_cheap_model", "") || process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini",
-  };
+  const out = {};
+  for (const [name, p] of Object.entries(AI_PROVIDERS)) {
+    out[name] = { main: db.getSetting(name + "_main_model", "") || p.main(), cheap: db.getSetting(name + "_cheap_model", "") || p.cheap() };
+  }
+  return out;
+}
+function llmPreviewCfg(settingKey) {
+  const m = modelSettings();
+  return { provider: db.getSetting(settingKey, "anthropic") || "anthropic",
+    anthropicKey: config.anthropicApiKey, openaiKey: config.openaiApiKey, deepseekKey: config.deepseekApiKey, zaiKey: config.zaiApiKey,
+    anthropicModel: m.anthropic.main, openaiModel: m.openai.main, deepseekModel: m.deepseek.main, zaiModel: m.zai.main,
+    fallbackModels: db.getSetting("fallback_models", "") || process.env.LLM_FALLBACK_MODELS || "" };
 }
 function fallbackPreview(settingKey) {
-  const { fallbackChain } = require("./llm/client");
-  const m = modelSettings();
-  return fallbackChain({ provider: db.getSetting(settingKey, "anthropic") || "anthropic",
-    anthropicKey: config.anthropicApiKey, openaiKey: config.openaiApiKey,
-    anthropicModel: m.anthropicMain, openaiModel: m.openaiMain,
-    fallbackModels: db.getSetting("fallback_models", "") || process.env.LLM_FALLBACK_MODELS || "" });
+  return require("./llm/client").fallbackChain(llmPreviewCfg(settingKey));
 }
 function aiModeText(title, settingKey) {
-  const a=config.anthropicApiKey?"✅":"❌", o=config.openaiApiKey?"✅":"❌";
   const m = modelSettings();
   const cur = db.getSetting(settingKey, "anthropic") || "anthropic";
-  return `${title}\n\nKalitlar: Anthropic ${a}  OpenAI ${o}\nHozirgi rejim: <b>${esc(MODE_LABELS[cur] || cur)}</b>\n\n`+
-    `<b>Modellar:</b>\n• Claude asosiy (qimmat): <code>${esc(m.anthropicMain)}</code>\n• Claude arzon: <code>${esc(m.anthropicCheap)}</code>\n`+
-    `• OpenAI asosiy: <code>${esc(m.openaiMain)}</code>\n• OpenAI arzon: <code>${esc(m.openaiCheap)}</code>\n\n`+
+  const keys = Object.entries(AI_PROVIDERS).map(([, p]) => p.label + " " + (p.key() ? "✅" : "❌")).join("  ");
+  const models = Object.entries(AI_PROVIDERS).map(([name, p]) =>
+    `• ${p.label}${p.key() ? "" : " (kalit yo'q)"}: <code>${esc(m[name].main)}</code> · arzon <code>${esc(m[name].cheap)}</code>`).join("\n");
+  return `${title}\n\nKalitlar: ${keys}\nHozirgi rejim: <b>${esc(MODE_LABELS[cur] || cur)}</b>\n\n`+
+    `<b>Modellar</b> (asosiy · arzon):\n${models}\n\n`+
     `🔀 <b>Zaxira modellar</b> (asosiy model 3 marta javob bermasa, ketma-ket):\n`+
     (fallbackPreview(settingKey).map((c, i) => `${i+1}. <code>${esc(c.provider+":"+c.model)}</code>`).join("\n") || "— (ikkinchi kalit yoki model yo'q)")+"\n\n"+
-    `<i>Kaskad rejimida avval arzon model ishlaydi; u 2 marta xato qilsa qimmat model ulanadi. Qimmat model ham 3 marta javob bermasa — zaxira modellarga o'tiladi.</i>`;
+    `<i>Kaskad rejimida avval arzon model ishlaydi; u 2 marta xato qilsa qimmat Claude ulanadi. Qimmat model ham 3 marta javob bermasa — zaxira modellarga o'tiladi.</i>`;
 }
 function providerInline(settingKey, prefix) {
   const cur = db.getSetting(settingKey, "anthropic") || "anthropic";
@@ -355,7 +368,8 @@ function providerInline(settingKey, prefix) {
   const kb = new InlineKeyboard();
   for (const mode of Object.keys(MODE_LABELS)) kb.text(m(mode)+MODE_LABELS[mode], prefix+":"+mode).row();
   return kb
-    .text("✏️ Claude modellari","adm:models:anthropic").text("✏️ OpenAI modellari","adm:models:openai").row()
+    .text("✏️ Claude","adm:models:anthropic").text("✏️ OpenAI","adm:models:openai").row()
+    .text("✏️ DeepSeek","adm:models:deepseek").text("✏️ GLM","adm:models:zai").row()
     .text("🔀 Zaxira modellar","adm:fallback").text("🧪 Tekshirish","adm:models_test").row()
     .text("⬅️ Orqaga","adm:back");
 }
@@ -372,13 +386,12 @@ bot.callbackQuery("adm:mustaqil_provider", async (ctx) => {
     { parse_mode:"HTML", reply_markup: providerInline("mustaqil_llm_provider","mprov") });
 });
 function modeKeyError(mode) {
-  const needsClaude = mode !== "openai";
-  const needsOpenAI = mode === "openai" || mode === "claude_openai";
-  if (needsClaude && !config.anthropicApiKey) return "ANTHROPIC_API_KEY yo'q!";
-  if (needsOpenAI && !config.openaiApiKey) return "OPENAI_API_KEY yo'q!";
-  return null;
+  const { CASCADE_MODES } = require("./llm/client");
+  const needed = CASCADE_MODES[mode] ? ["anthropic", CASCADE_MODES[mode]] : [mode];
+  const missing = [...new Set(needed)].filter(name => AI_PROVIDERS[name] && !AI_PROVIDERS[name].key());
+  return missing.length ? missing.map(name => AI_PROVIDERS[name].env).join(", ") + " yo'q!" : null;
 }
-bot.callbackQuery(/^(prov|mprov):(anthropic|openai|claude_openai|claude_claude)$/, async (ctx) => {
+bot.callbackQuery(/^(prov|mprov):(anthropic|openai|deepseek|zai|claude_openai|claude_claude|claude_deepseek|claude_glm)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
   const [prefix, mode] = [ctx.match[1], ctx.match[2]];
   const problem = modeKeyError(mode);
@@ -393,12 +406,10 @@ bot.callbackQuery(/^(prov|mprov):(anthropic|openai|claude_openai|claude_claude)$
 async function modelTestReport() {
   const { testModel } = require("./llm/client");
   const m = modelSettings();
-  const jobs = [
-    ["Claude asosiy", "anthropic", m.anthropicMain, config.anthropicApiKey],
-    ["Claude arzon", "anthropic", m.anthropicCheap, config.anthropicApiKey],
-    ["OpenAI asosiy", "openai", m.openaiMain, config.openaiApiKey],
-    ["OpenAI arzon", "openai", m.openaiCheap, config.openaiApiKey],
-  ];
+  const jobs = [];
+  for (const [name, p] of Object.entries(AI_PROVIDERS)) {
+    jobs.push([p.label + " asosiy", name, m[name].main, p.key()], [p.label + " arzon", name, m[name].cheap, p.key()]);
+  }
   const lines = await Promise.all(jobs.map(async ([label, provider, model, key]) => {
     if (!key) return `⚪️ ${label}: kalit yo'q`;
     try {
@@ -414,7 +425,8 @@ bot.callbackQuery("adm:fallback", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
   ctx.session.step = "admin_fallback"; await ctx.answerCallbackQuery();
   await ctx.reply("🔀 Zaxira modellar tartibini yuboring (provayder:model, vergul bilan):\n\n"+
-    "<code>openai:gpt-5, anthropic:claude-opus-5-5, anthropic:claude-haiku-5-5</code>\n\n"+
+    "<code>openai:gpt-5, anthropic:claude-opus-5-5, deepseek:deepseek-v4-pro, glm:glm-5.3</code>\n\n"+
+    "Provayderlar: anthropic, openai, deepseek, glm\n\n"+
     "Hozirgi: <code>"+esc(db.getSetting("fallback_models","") || "standart")+"</code>\nStandart tartib: <code>default</code>\nO'chirish: <code>off</code>", { parse_mode:"HTML" });
 });
 bot.callbackQuery("adm:models_test", async (ctx) => {
@@ -422,14 +434,16 @@ bot.callbackQuery("adm:models_test", async (ctx) => {
   await ctx.answerCallbackQuery("Tekshirilmoqda...");
   await ctx.reply(await modelTestReport(), { parse_mode: "HTML" });
 });
-bot.callbackQuery(/^adm:models:(anthropic|openai)$/, async (ctx) => {
+bot.callbackQuery(/^adm:models:(anthropic|openai|deepseek|zai)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
   const provider = ctx.match[1];
   ctx.session.step = "admin_models_" + provider;
   await ctx.answerCallbackQuery();
   const m = modelSettings();
-  const example = provider === "anthropic" ? `${m.anthropicMain} ${m.anthropicCheap}` : `${m.openaiMain} ${m.openaiCheap}`;
-  await ctx.reply(`✏️ ${provider === "anthropic" ? "Claude" : "OpenAI"} modellarini yuboring: <code>asosiy arzon</code>\n\nMasalan:\n<code>${esc(example)}</code>\n\nStandartga qaytarish: <code>default</code>`, { parse_mode:"HTML" });
+  const example = `${m[provider].main} ${m[provider].cheap}`;
+  const hint = { deepseek: "\n\nDeepSeek modellari: <code>deepseek-v4-pro</code>, <code>deepseek-flash</code>",
+    zai: "\n\nGLM modellari: <code>glm-5.3</code>, <code>glm-5.3-flashx</code>, <code>glm-5.3-flash</code>, <code>glm-5</code>, <code>glm-4.7-flash</code> (bepul)" }[provider] || "";
+  await ctx.reply(`✏️ ${AI_PROVIDERS[provider].label} modellarini yuboring: <code>asosiy arzon</code>\n\nMasalan:\n<code>${esc(example)}</code>${hint}\n\nStandartga qaytarish: <code>default</code>`, { parse_mode:"HTML" });
 });
 
 // --- Narx / Karta ---
@@ -990,8 +1004,8 @@ bot.on("message:text", async (ctx) => {
   }
 
   // Admin kiritishlari
-  if ((step === "admin_models_anthropic" || step === "admin_models_openai") && isAdmin(ctx.from.id)) {
-    const provider = step.endsWith("anthropic") ? "anthropic" : "openai";
+  if (/^admin_models_(anthropic|openai|deepseek|zai)$/.test(step) && isAdmin(ctx.from.id)) {
+    const provider = step.replace("admin_models_", "");
     ctx.session.step = "idle";
     if (/^default$/i.test(text.trim())) {
       db.setSetting(provider + "_main_model", ""); db.setSetting(provider + "_cheap_model", "");

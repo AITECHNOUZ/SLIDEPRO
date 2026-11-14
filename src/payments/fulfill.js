@@ -129,6 +129,12 @@ async function fulfillOrder(orderId) {
     openaiKey: config.openaiApiKey,
     openaiModel: setting("openai_main_model", config.openaiModel),
     openaiCheapModel: setting("openai_cheap_model", process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini"),
+    deepseekKey: config.deepseekApiKey,
+    deepseekModel: setting("deepseek_main_model", config.deepseekModel),
+    deepseekCheapModel: setting("deepseek_cheap_model", process.env.DEEPSEEK_CHEAP_MODEL || "deepseek-flash"),
+    zaiKey: config.zaiApiKey,
+    zaiModel: setting("zai_main_model", config.zaiModel),
+    zaiCheapModel: setting("zai_cheap_model", process.env.ZAI_CHEAP_MODEL || "glm-5.3-flash"),
     // Asosiy model 3 marta javob bermasa o'tiladigan zaxira modellar (admin sozlamasi; bo'sh — standart zanjir)
     fallbackModels: setting("fallback_models", process.env.LLM_FALLBACK_MODELS || ""),
   };

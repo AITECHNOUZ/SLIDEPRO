@@ -15,6 +15,11 @@ const config = {
   openaiApiKey: process.env.OPENAI_API_KEY,
   openaiModel: process.env.OPENAI_MODEL || "gpt-5-mini",
 
+  deepseekApiKey: process.env.DEEPSEEK_API_KEY,
+  deepseekModel: process.env.DEEPSEEK_MODEL || "deepseek-v4-pro",
+  zaiApiKey: process.env.ZAI_API_KEY || process.env.GLM_API_KEY,
+  zaiModel: process.env.ZAI_MODEL || "glm-5.3",
+
   // Admin Telegram ID(lar) — vergul bilan ajratilgan
   adminIds: (process.env.ADMIN_IDS || "")
     .split(",")
@@ -43,7 +48,7 @@ const config = {
     click_enabled: process.env.CLICK_ENABLED === "true" ? "1" : "0",
     payme_enabled: process.env.PAYME_ENABLED === "true" ? "1" : "0",
     // LLM provayder: "anthropic" | "openai" | "both"
-    llm_provider: (["anthropic","openai","both","claude_openai","claude_claude"].includes(process.env.LLM_PROVIDER) ? process.env.LLM_PROVIDER : "anthropic"),
+    llm_provider: (["anthropic","openai","deepseek","zai","both","claude_openai","claude_claude","claude_deepseek","claude_glm"].includes(process.env.LLM_PROVIDER) ? process.env.LLM_PROVIDER : "anthropic"),
     // Mustaqil ish uchun alohida LLM (bo'sh = taqdimot bilan bir xil)
     mustaqil_llm_provider: process.env.MUSTAQIL_LLM_PROVIDER || "",
   },
@@ -80,8 +85,8 @@ function assertConfig() {
   const missing = [];
   if (!config.botToken) missing.push("BOT_TOKEN");
   if (config.adminIds.length === 0) missing.push("ADMIN_IDS");
-  if (!config.anthropicApiKey && !config.openaiApiKey)
-    missing.push("ANTHROPIC_API_KEY yoki OPENAI_API_KEY (kamida bittasi)");
+  if (!config.anthropicApiKey && !config.openaiApiKey && !config.deepseekApiKey && !config.zaiApiKey)
+    missing.push("ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY yoki ZAI_API_KEY (kamida bittasi)");
   if (missing.length) {
     throw new Error("Quyidagi muhit o'zgaruvchilari yetishmaydi: " + missing.join(", "));
   }
