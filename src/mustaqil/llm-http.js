@@ -16,9 +16,12 @@ function getRetryDelay(response, attempt) {
     const requestedMs = Number.isFinite(seconds)
       ? seconds * 1000
       : Date.parse(retryAfter) - Date.now();
-    if (Number.isFinite(requestedMs)) return Math.max(0, Math.min(requestedMs, 8_000));
+    if (Number.isFinite(requestedMs)) return Math.max(0, Math.min(requestedMs, 60_000));
   }
-  return Math.min(4_000, 500 * (2 ** attempt)) + Math.floor(Math.random() * 200);
+  // 429 (limit) va 529 (Anthropic overloaded) uzoqroq davom etadi — kattaroq kutish
+  const status = response?.status;
+  const base = status === 429 || status === 529 ? 4_000 : 1_000;
+  return Math.min(30_000, base * (2 ** attempt)) + Math.floor(Math.random() * 500);
 }
 
 async function postJsonWithRetry(url, options, provider, fetchImpl = fetch, { timeoutMs = LLM_REQUEST_TIMEOUT_MS, retries = LLM_RETRY_LIMIT } = {}) {

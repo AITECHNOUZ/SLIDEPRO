@@ -1,5 +1,6 @@
 const MEDIA_TYPES = new Set(["formula", "chart", "flowchart", "table"]);
 const { selectFlowchartTemplates } = require("./flowchart-templates");
+const { assignFormulaComplexity } = require("./formula-complexity");
 const { classifyMatplotlibType, EXTRA_CHART_KINDS, suitableChartTypes } = require("./diagram-types");
 
 function countFor(chapter, type, plans) {
@@ -43,6 +44,8 @@ function buildMediaSlots(chapters = [], { random = Math.random, topic = "" } = {
       }
     }
   });
+  // Formula murakkabligi: bittasi murakkab, qolganlari o'rtacha
+  assignFormulaComplexity(slots.filter(slot => slot.type === "formula"));
   const flowchartSlots = slots.filter(slot => slot.type === "flowchart");
   const contexts = flowchartSlots.map(slot => {
     const chapter = chapters[slot.chapterIndex] || {};

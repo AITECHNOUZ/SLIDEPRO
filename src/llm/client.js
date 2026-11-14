@@ -40,8 +40,11 @@ function timeoutFor(maxTokens) {
 }
 
 function providerOrder(provider, cfg) {
-  const order = provider === "openai" ? ["openai"]
-    : provider === "anthropic" ? ["anthropic"]
+  // Asosiy provayder yiqilsa (overload, limit, refusal) ikkinchi kalit bo'lsa zaxira sifatida ishlatiladi —
+  // foydalanuvchi baribir hujjat olishi kerak. LLM_STRICT_PROVIDER=1 bo'lsa faqat tanlangan provayder.
+  const strict = /^(1|true|yes)$/i.test(String(process.env.LLM_STRICT_PROVIDER || ""));
+  const order = provider === "openai" ? (strict ? ["openai"] : ["openai", "anthropic"])
+    : provider === "anthropic" ? (strict ? ["anthropic"] : ["anthropic", "openai"])
       : ["anthropic", "openai"];
   return order.filter(name => (name === "anthropic" && cfg.anthropicKey) || (name === "openai" && cfg.openaiKey));
 }
@@ -80,7 +83,7 @@ async function callAnthropic({ system, user, apiKey, model, maxTokens, temperatu
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify(body),
-  }, "Anthropic", undefined, { timeoutMs: timeoutFor(budget), retries: intEnv("LLM_RETRIES", 3) });
+  }, "Anthropic", undefined, { timeoutMs: timeoutFor(budget), retries: intEnv("LLM_RETRIES", 4) });
 
   const text = (data.content || []).filter(block => block.type === "text").map(block => block.text).join("").trim();
   if (data.stop_reason === "max_tokens") throw new TruncatedResponseError("Anthropic", budget);
@@ -111,7 +114,7 @@ async function callOpenAI({ system, user, apiKey, model, maxTokens, json, temper
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
     body: JSON.stringify(body),
-  }, "OpenAI", undefined, { timeoutMs: timeoutFor(budget), retries: intEnv("LLM_RETRIES", 3) });
+  }, "OpenAI", undefined, { timeoutMs: timeoutFor(budget), retries: intEnv("LLM_RETRIES", 4) });
 
   const choice = data.choices && data.choices[0];
   const message = choice && choice.message;

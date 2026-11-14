@@ -29,6 +29,7 @@ const { renderChart }   = require("./chart");
 const { renderFlowchart } = require("./flowchart");
 const { getFlowchartTemplate } = require("./flowchart-templates");
 const { classifyGraphvizType, EXTRA_CHART_KINDS } = require("./diagram-types");
+const { formulaComplexity, complexityGuidance, fallbackFormula, COMPLEX_MIN_SCORE, MEDIUM_MIN_SCORE } = require("./formula-complexity");
 const { buildDocument, tocEntries } = require("./builder");
 const { renumberMedia } = require("./media-numbering");
 const { countWords, chapterMainNumber, normalizeChapterContent, clampChapterContent } = require("./structure");
@@ -100,7 +101,7 @@ function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
   const chapterContext = chapter?.title ? ` Bob: ${chapter.title}.${chapter.role ? ` Bob vazifasi: ${chapter.role}.` : ""}` : "";
   const common = `Mavzu: ${topic || "Mavzu"}.${chapterContext} Til: ${language || "o'zbek"}. Slot ID: ${slot.slot_id}. Reja: ${planText}.${source}\nFaqat bitta media obyektini tuz. Slot ID va type qiymatlarini aynan saqla; boshqa izoh yoki markdown bermagin. Sarlavha va caption media mazmunini tabiiy, qisqa ifodalasin; ularga meta-ma'lumot yoki status yorlig'i qo'shma.`;
   const schemas = {
-    formula: `${(typeof slot.plan === "string" ? slot.plan : slot.plan?.latex) ? "Aynan rejalashtirilgan LaTeX formulani qaytar, yangi formula to'qima." : "Rejada faqat formula konsepti berilgan: shu bob mazmuniga AYNAN mos, darsliklarda qabul qilingan, boshqa boblardagi formulalarni takrorlamaydigan bitta asosiy formula yoz (umumiy F=ma kabi mavzudan uzoq formulalar emas)."} Formula Word'ga OMML (native tenglama) bo'lib tushadi, shuning uchun toza standart LaTeX yoz: \\frac, ^{}, _{}, \\sqrt, \\sum, \\int, \\left( \\right), \\text{} — $ belgilari, \\label, \\tag yoki raqam qo'shma. "where" maydonida formuladagi HAR BIR belgini ketma-ket izohla: belgi $...$ ichida, keyin tire, ma'nosi va o'lchov birligi (masalan: "$U$ — kuchlanish, V; $I$ — tok kuchi, A; $R$ — qarshilik, Om"). "bu yerda" so'zini yozma — dastur o'zi qo'shadi. JSON: {"slot_id":"${slot.slot_id}","type":"formula","latex":"...","display_text":"...","caption":"...","where":"$X$ — ..., birlik; $Y$ — ..., birlik"}`,
+    formula: `${(typeof slot.plan === "string" ? slot.plan : slot.plan?.latex) ? "Aynan rejalashtirilgan LaTeX formulani qaytar, yangi formula to'qima." : `Rejada faqat formula konsepti berilgan: shu bob mazmuniga AYNAN mos, darsliklarda qabul qilingan, boshqa boblardagi formulalarni takrorlamaydigan bitta asosiy formula yoz (umumiy F=ma kabi mavzudan uzoq formulalar emas). ${complexityGuidance(slot.complexity)}`} Formula Word'ga OMML (native tenglama) bo'lib tushadi, shuning uchun toza standart LaTeX yoz: \\frac, ^{}, _{}, \\sqrt, \\sum, \\int, \\left( \\right), \\text{} — $ belgilari, \\label, \\tag yoki raqam qo'shma. "where" maydonida formuladagi HAR BIR belgini ketma-ket izohla: belgi $...$ ichida, keyin tire, ma'nosi va o'lchov birligi (masalan: "$U$ — kuchlanish, V; $I$ — tok kuchi, A; $R$ — qarshilik, Om"). "bu yerda" so'zini yozma — dastur o'zi qo'shadi. JSON: {"slot_id":"${slot.slot_id}","type":"formula","latex":"...","display_text":"...","caption":"...","where":"$X$ — ..., birlik; $Y$ — ..., birlik"}`,
     chart: EXTRA_CHART_PROMPTS[slot.diagram_type] ? EXTRA_CHART_PROMPTS[slot.diagram_type](slot)
       : slot.diagram_type === "mathematical_graph"
       ? `Matplotlib matematik grafik uchun JSON qaytar. 1–5 ta mavzuga mos aniq funksiyani yoz; rejadagi functions, x_min va x_max mavjud bo‘lsa ularni aynan saqla, mavzu/rejaga zid funksiya bilan almashtirma. Ifodada faqat x, pi, e, raqamlar, + - * / **, qavs va sin/cos/tan/asin/acos/atan/sinh/cosh/tanh/exp/log/log10/sqrt/abs funksiyalaridan foydalan. x_min < x_max bo‘lsin; render 501 namunaviy nuqtani hisoblab, silliq egri chiziq chizadi — y qiymatlarini qo‘lda sanab kiritma. Oraliq va ifoda mazmuniga mos, sarlavha/birlik/o‘qlarni aniq yoz. GOST uslubi: o'q yozuvlarida kattalik belgisi va birlik bo'lsin (masalan \"Harorat $T$\", unit \"°C\"); mazmunan muhim chegara/me'yor qiymati bo'lsa, ixtiyoriy \"threshold\":{\"value\":...,\"label\":\"...\"} maydonini qo'sh — u qizil punktir chiziq bo'lib chiziladi. Haqiqiy manba promptda bo‘lmasa, manba uydirma qilma va data_source ni bo‘sh qoldir. JSON: {"slot_id":"${slot.slot_id}","type":"chart","diagram_type":"mathematical_graph","chartType":"line","title":"...","functions":[{"name":"f(x)","expression":"x**2"}],"x_min":-5,"x_max":5,"x_label":"x","y_label":"f(x)","unit":"","data_source":"","caption":"..."}`
@@ -524,6 +525,10 @@ function normalizeMediaSlotResult(slot, response, { chapter, language }) {
     if (!plannedLatex) {
       // Rejada faqat konsept bor: formulani media so'rovi yozadi (OMML tekshiruvi keyinroq).
       if (!responseLatex || responseLatex.length < 3) throw new Error("formula bo'sh qaytdi");
+      // Murakkablik siyosati (oxirgi urinishda talab yumshatiladi — sodda bo'lsa ham qabul qilinadi)
+      const score = formulaComplexity(responseLatex);
+      if (!slot._lenient && slot.complexity === "complex" && score < COMPLEX_MIN_SCORE) throw new Error(`formula yetarlicha murakkab emas (${score})`);
+      if (!slot._lenient && slot.complexity === "medium" && score < MEDIUM_MIN_SCORE) throw new Error(`formula juda sodda (${score})`);
     } else if (formulaKey(responseLatex) !== formulaKey(plannedLatex)) {
       throw new Error("formula rejalashtirilgan LaTeX bilan mos emas");
     }
@@ -707,6 +712,7 @@ async function generateMediaSlot(slot, { chapter, topic, language, sourceContent
   const maxAttempts = slot.type === "chart" || slot.type === "table" ? 1 : SLOT_RETRY_LIMIT;
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    slot._lenient = attempt === maxAttempts; // oxirgi urinishda murakkablik talabi yumshatiladi
     try {
       const text = await callLLM({
         system: "Sen bitta akademik media slotining strukturalangan ma'lumotini tayyorlaysan. Javob faqat yaroqli JSON bo'lsin.",
@@ -726,9 +732,17 @@ async function generateMediaSlot(slot, { chapter, topic, language, sourceContent
 
   const planLatex = slot.type === "formula" ? (typeof slot.plan === "string" ? slot.plan : slot.plan?.latex) : "ok";
   if (slot.type === "formula" && !String(planLatex || "").trim()) {
-    // Konsept-reja formulasi yozilmadi: uydirma formula qo'ymaymiz, slot tashlab ketiladi.
-    console.warn(`[mustaqil] formula slot ${slot.slot_id} tashlab ketildi (${lastError?.message || "xato"})`);
-    return { slot, item: { type: "skip", slot_id: slot.slot_id }, image: null, fallback: true, skipped: true };
+    // Konsept-reja formulasi yozilmadi: universal (har doim to'g'ri) formulalar bankidan sodda/o'rtacha formula qo'yiladi.
+    const banked = fallbackFormula(slot, language);
+    const item = { type: "formula", slot_id: slot.slot_id, latex: banked.latex, display_text: banked.latex, caption: banked.caption, where: banked.where, _syntheticFallback: true };
+    try {
+      const image = await renderAndVerifyMedia(item);
+      console.warn(`[mustaqil] formula slot ${slot.slot_id} zaxira bankdan to'ldirildi (${lastError?.message || "xato"})`);
+      return { slot, item, image, fallback: true };
+    } catch (error) {
+      console.warn(`[mustaqil] formula slot ${slot.slot_id} tashlab ketildi (${error.message})`);
+      return { slot, item: { type: "skip", slot_id: slot.slot_id }, image: null, fallback: true, skipped: true };
+    }
   }
   const item = fallbackMediaSlot(slot, { chapter, language });
   if (slot.type === "chart" && EXTRA_CHART_KINDS[slot.diagram_type] && item.diagram_type !== slot.diagram_type) {
@@ -1131,6 +1145,14 @@ async function fitDocumentToPages({ spec, pngCache, buf, outline, llm, language,
   };
 }
 
+// Zaxira: faqat bob/bo'lim sarlavhalarini so'raydigan qisqa prompt (kesilish va xato ehtimoli past)
+function liteOutlinePrompt({ topic, language, mainChapterCount, subsectionCount }) {
+  return `Mavzu: "${topic}". Til: ${language}. Mustaqil ish rejasi uchun JSON qaytar.
+Aynan ${mainChapterCount} ta asosiy bob, jami ${subsectionCount} ta ichki bo'lim (har bobda 1–3 ta), Kirish va Xulosa.
+Sarlavhalar mavzuga xos, aniq va takrorlanmas bo'lsin. Adabiyotlar uchun faqat haqiqatda mavjud, aniq biladigan 6–10 ta kitob/maqola (o'zbek, rus, ingliz tillarida) yoz; ishonching komil bo'lmasa yozma.
+JSON: {"meta":{"title":"${String(topic).replace(/"/g, "'")}"},"chapters":[{"id":"intro","title":"Kirish","role":"introduction","sections":[]},{"id":"ch1","title":"...","role":"theory","sections":[{"title":"..."}]},{"id":"conclusion","title":"Xulosa","role":"conclusion","sections":[]}],"references":[{"authors":"...","year":2020,"title":"...","publisher":"...","type":"book"}]}`;
+}
+
 async function generateMustaqilIsh({ topic, pages, language, studentName, studentGroup, org, supervisor, university, faculty, department, includeToc = false, sourceContent, llm, outFile, flowchartCount = null, chartCount, chartPlans, formulaCount, formulaPlans, onProgress, random = Math.random }) {
   const reportProgress = async (percent, phase) => {
     if (typeof onProgress !== "function") return;
@@ -1170,11 +1192,36 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
 
   // в”Ђв”Ђ PASS 1: OUTLINE в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
   console.log("[mustaqil] 1-pass: outline...");
-  let outline = parseOutline(await callLLM({
-    system: outlineSystemPrompt(),
-    user:   outlineUserPrompt({ topic, pages, language:lang, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount: requestedFlowchartCount, chartCount: requestedChartCount, formulaCount: requestedFormulaCount }),
-    llm, maxTokens: 6000, // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
-  }));
+  // Outline zanjiri: to'liq reja → qayta urinish → yengil reja (faqat sarlavhalar) → mavzu asosidagi skelet.
+  // Har qanday holatda ham hujjat davom etadi; normalizeOutlineForPages yetishmagan qismlarni to'ldiradi.
+  let outline = null;
+  for (let attempt = 1; attempt <= 2 && !outline; attempt++) {
+    try {
+      outline = parseOutline(await callLLM({
+        system: outlineSystemPrompt(),
+        user:   outlineUserPrompt({ topic, pages, language:lang, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount: requestedFlowchartCount, chartCount: requestedChartCount, formulaCount: requestedFormulaCount }),
+        llm, maxTokens: 6000, // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
+      }));
+      if (!Array.isArray(outline?.chapters) || !outline.chapters.length) throw new Error("outline'da bob yo'q");
+    } catch (error) {
+      outline = null;
+      console.warn(`[mustaqil] outline urinish ${attempt}/2 xato: ${error.message}`);
+    }
+  }
+  if (!outline) {
+    try {
+      outline = parseOutline(await callLLM({
+        system: "Sen akademik ish rejasini tuzuvchi yordamchisan. Faqat JSON qaytar.",
+        user: liteOutlinePrompt({ topic, language: lang, mainChapterCount: pagePlanForWork.mainChapterCount, subsectionCount: pagePlanForWork.subsectionCount }),
+        llm, maxTokens: 2500,
+      }));
+      console.warn("[mustaqil] yengil outline ishlatildi (to'liq reja olinmadi)");
+    } catch (error) {
+      console.warn("[mustaqil] yengil outline ham olinmadi — mavzu skeleti bilan davom:", error.message);
+      outline = { meta: { title: topic }, chapters: [], references: [] };
+    }
+  }
+  if (!outline.meta) outline.meta = { title: topic };
   if (outline.meta) outline.meta.year = String(new Date().getFullYear());
   outline.total_words_target = outline.total_words_target || totalWt;
 
@@ -1280,7 +1327,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   }), { formula: 0, chart: 0, flowchart: 0 });
   for (const [name, requested] of [["formula", requestedFormulaCount], ["chart", requestedChartCount], ["flowchart", requestedFlowchartCount]]) {
     if (requested != null && plannedMediaCounts[name] !== requested) {
-      throw new Error(`Outline media rejasida ${plannedMediaCounts[name]}/${requested} ta ${name} bor; to'liq media rejasi tuzilmagani uchun hujjat chiqarilmadi.`);
+      console.warn(`[mustaqil] Outline media rejasida ${plannedMediaCounts[name]}/${requested} ta ${name} bor; mavjud reja bilan davom etiladi.`);
     }
   }
 
@@ -1526,6 +1573,13 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
 
   const finalWordValidation = evaluateWordTargets(chapters, outline.chapters, totalWt, WORD_ACCEPTANCE_RATIO, skippedTextSlots);
   const finalWords = finalWordValidation.totalWords;
+  if (totalWt > 0 && finalWords < totalWt * 0.35) {
+    // Matnning katta qismi yozilmadi — bu odatda API vaqtincha ishlamayotganini bildiradi.
+    // Yarim bo'sh hujjat yubormaymiz: xato qayta urinish uchun belgilanadi (fulfill keyinroq qayta boshlaydi).
+    const error = new Error(`LLM matnning faqat ${finalWords}/${totalWt} so'zini qaytardi (API vaqtincha ishlamayapti)`);
+    error.retryable = true;
+    throw error;
+  }
   if (!finalWordValidation.accepted) {
     const deficient = finalWordValidation.outOfRangeSlots.map(slot => wordRangeDescription(slot));
     if (!finalWordValidation.totalAccepted) deficient.unshift(`umumiy matn ${finalWordValidation.effectiveTotalWords}/${finalWordValidation.effectiveTotalTarget} samarali so'z (aslida ${finalWords}/${totalWt})`);
@@ -1545,7 +1599,12 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   }
   const budgetedWords = chapters.reduce((sum, chapter) => sum + countWords(chapter.content), 0);
   console.log("[mustaqil] Word matn byudjeti:", budgetedWords + "/" + totalWt);
-  validatePlannedMedia(chapters, outline.chapters, { language: lang });
+  try {
+    validatePlannedMedia(chapters, outline.chapters, { language: lang });
+  } catch (error) {
+    // Media tekshiruvi hujjatni to'xtatmaydi: yaroqsiz qism zaxira (sodda) variant bilan qoladi.
+    console.warn("[mustaqil] media tekshiruvi ogohlantirishi (hujjat davom etadi):", error.message);
+  }
   await reportProgress(85, "Matn va reja tekshirildi");
 
   // Render and build the final document.

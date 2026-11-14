@@ -732,5 +732,9 @@ async function main() {
   console.log("Bot ishga tushdi.");
   console.log("Super adminlar:", config.adminIds.join(", "));
   bot.start();
+  // Oldingi ishga tushirishda yarim qolgan buyurtmalar (server restart) qayta tayyorlanadi
+  setTimeout(() => fulfill.resumeStuckOrders(db.listOrdersByStatuses).then(count => {
+    if (count) console.log(`[bot] ${count} ta yarim qolgan buyurtma davom ettirildi`);
+  }), 5_000);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

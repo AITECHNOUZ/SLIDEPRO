@@ -79,12 +79,22 @@ async function fulfillOrder(orderId) {
   try {
     let res;
     if (isMustaqil) {
-      res = await generateMustaqilIsh({ topic: order.topic, pages: order.pages || 15,
+      res = await withRetries(() => generateMustaqilIsh({ topic: order.topic, pages: order.pages || 15,
         language: order.language || "o\'zbek", studentName: order.student_name || "", studentGroup: order.student_group || "",
         org: "", supervisor: order.supervisor || "", university: order.university || "",
         faculty: order.faculty || "", department: order.department || "", includeToc: Boolean(order.include_toc),
         sourceContent: order.content_text || "", llm: llmCfg, outFile,
-        onProgress: ({ percent, phase }) => progress?.update(percent, phase) });
+        onProgress: ({ percent, phase }) => progress?.update(percent, phase) }), {
+        orderId,
+        // Ikkinchi urinishdan boshlab ikkala provayder ham ishlatiladi (Claude → OpenAI zaxira)
+        onRetry: async (attempt, error) => {
+          llmCfg.provider = "both";
+          if (attempt === 1) {
+            try { await _bot.api.sendMessage(order.user_tg_id, "⏳ Server hozir band — mustaqil ishingiz biroz kechikib, avtomatik qayta tayyorlanmoqda. Hech narsa qilish shart emas."); } catch (_) {}
+          }
+          notifyAdmins(`⚠️ #${orderId} ${attempt}-urinish xato, qayta uriniladi: ${String(error.message).slice(0, 300)}`);
+        },
+      });
       res.slideCount = order.pages || 15;
     } else {
       res = await generatePresentation({ topic: order.topic, slides: order.slides,
@@ -146,6 +156,40 @@ async function fulfillOrder(orderId) {
   }
 }
 
+// Generatsiyani bir necha marta qayta urinish (API overload, tarmoq uzilishi va h.k.)
+const RETRY_DELAYS_MS = [60_000, 5 * 60_000];
+async function withRetries(fn, { orderId, onRetry } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt === RETRY_DELAYS_MS.length) break;
+      console.warn(`[fulfill] #${orderId} urinish ${attempt + 1} xato: ${error.message}; ${RETRY_DELAYS_MS[attempt] / 1000}s dan keyin qayta`);
+      try { await onRetry?.(attempt + 1, error); } catch (_) {}
+      await new Promise(resolve => setTimeout(resolve, Number(process.env.FULFILL_RETRY_DELAY_MS) >= 0 && process.env.FULFILL_RETRY_DELAY_MS !== undefined ? Number(process.env.FULFILL_RETRY_DELAY_MS) : RETRY_DELAYS_MS[attempt]));
+    }
+  }
+  throw lastError;
+}
+
+// Bot qayta ishga tushganda "generating" holatida qolib ketgan buyurtmalarni davom ettirish
+async function resumeStuckOrders(listOrdersByStatuses) {
+  try {
+    const stuck = (listOrdersByStatuses(["generating"], 50) || []).filter(order => order && order.status === "generating");
+    for (const order of stuck) {
+      updateOrder(order.id, { status: "paid" });
+      console.log(`[fulfill] #${order.id} qayta ishga tushirishdan keyin davom ettirilmoqda`);
+      fulfillOrder(order.id).catch(error => console.error(`[fulfill] #${order.id} resume xato:`, error.message));
+    }
+    return stuck.length;
+  } catch (error) {
+    console.error("[fulfill] resumeStuckOrders xato:", error.message);
+    return 0;
+  }
+}
+
 function notifyAdmins(text) {
   let ids = [...config.adminIds];
   try { const { listAdmins } = require("../db"); ids = ids.concat(listAdmins().map((a) => a.tg_id)); } catch (_) {}
@@ -153,4 +197,4 @@ function notifyAdmins(text) {
   for (const id of ids) { _bot.api.sendMessage(id, text).catch(() => {}); }
 }
 
-module.exports = { init, fulfillOrder, notifyAdmins, cacheKey };
+module.exports = { init, fulfillOrder, notifyAdmins, cacheKey, withRetries, resumeStuckOrders };
