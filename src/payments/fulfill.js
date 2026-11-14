@@ -95,7 +95,18 @@ async function fulfillOrder(orderId) {
   const outFile = path.join(outDir, "order_" + orderId + "_" + slug(order.topic) + ext);
   const mustaqilProv = getSetting("mustaqil_llm_provider", "");
   const llmProvider = (isMustaqil && mustaqilProv) ? mustaqilProv : getSetting("llm_provider", "anthropic");
-  const llmCfg = { provider: llmProvider, anthropicKey: config.anthropicApiKey, anthropicModel: config.model, openaiKey: config.openaiApiKey, openaiModel: config.openaiModel };
+  const setting = (key, fallback) => getSetting(key, "") || fallback;
+  const llmCfg = {
+    provider: llmProvider,
+    anthropicKey: config.anthropicApiKey,
+    anthropicModel: setting("anthropic_main_model", config.model),
+    anthropicCheapModel: setting("anthropic_cheap_model", process.env.ANTHROPIC_CHEAP_MODEL || "claude-haiku-5-5"),
+    openaiKey: config.openaiApiKey,
+    openaiModel: setting("openai_main_model", config.openaiModel),
+    openaiCheapModel: setting("openai_cheap_model", process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini"),
+  };
+  // Taqdimot generatori eski provayder nomlarini tushunadi: kaskad rejimlari unga moslab beriladi
+  const presentationLlm = { ...llmCfg, provider: llmProvider === "claude_openai" ? "both" : llmProvider === "claude_claude" ? "anthropic" : llmProvider };
 
   try {
     let res;
@@ -112,7 +123,8 @@ async function fulfillOrder(orderId) {
         orderId,
         // Ikkinchi urinishdan boshlab ikkala provayder ham ishlatiladi (Claude → OpenAI zaxira)
         onRetry: async (attempt, error) => {
-          llmCfg.provider = "both";
+          // Qayta urinishda ikkala kalit bo'lsa OpenAI ham zaxiraga qo'shiladi
+          if (llmCfg.anthropicKey && llmCfg.openaiKey && llmCfg.provider === "anthropic") llmCfg.provider = "both";
           if (attempt === 1) {
             try { await _bot.api.sendMessage(order.user_tg_id, "⏳ Server hozir band — mustaqil ishingiz biroz kechikib, avtomatik qayta tayyorlanmoqda. Hech narsa qilish shart emas."); } catch (_) {}
           }
@@ -127,7 +139,7 @@ async function fulfillOrder(orderId) {
       res = await generatePresentation({ topic: order.topic, slides: order.slides,
         sourceContent: order.content_text || "",
         studentName: order.student_name || "", studentGroup: order.student_group || "",
-        llm: llmCfg, outFile });
+        llm: presentationLlm, outFile });
     }
 
     const caption = isMustaqil

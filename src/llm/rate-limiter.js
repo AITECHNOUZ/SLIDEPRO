@@ -133,13 +133,17 @@ function estimateTokens(text) {
   return Math.ceil(cyrillic / 2.2 + (value.length - cyrillic) / 3);
 }
 
-let shared = null;
-function sharedLimiter() {
-  if (!shared) shared = new RateLimiter();
-  return shared;
+// Model sinfi bo'yicha alohida cheklagichlar (Anthropic limitlari model sinfiga qarab alohida)
+const shared = new Map();
+let override = null;
+function sharedLimiter(key = "default") {
+  if (override) return override;
+  if (!shared.has(key)) shared.set(key, new RateLimiter());
+  return shared.get(key);
 }
 function resetSharedLimiter(limiter = null) {
-  shared = limiter;
+  override = limiter;
+  shared.clear();
 }
 
 module.exports = { RateLimiter, estimateTokens, sharedLimiter, resetSharedLimiter, defaultLimits };

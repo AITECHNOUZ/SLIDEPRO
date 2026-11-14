@@ -43,7 +43,7 @@ const config = {
     click_enabled: process.env.CLICK_ENABLED === "true" ? "1" : "0",
     payme_enabled: process.env.PAYME_ENABLED === "true" ? "1" : "0",
     // LLM provayder: "anthropic" | "openai" | "both"
-    llm_provider: (["anthropic","openai","both"].includes(process.env.LLM_PROVIDER) ? process.env.LLM_PROVIDER : "anthropic"),
+    llm_provider: (["anthropic","openai","both","claude_openai","claude_claude"].includes(process.env.LLM_PROVIDER) ? process.env.LLM_PROVIDER : "anthropic"),
     // Mustaqil ish uchun alohida LLM (bo'sh = taqdimot bilan bir xil)
     mustaqil_llm_provider: process.env.MUSTAQIL_LLM_PROVIDER || "",
   },

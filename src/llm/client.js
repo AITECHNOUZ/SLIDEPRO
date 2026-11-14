@@ -41,9 +41,19 @@ function alertOnce(key, text, everyMs = 30 * 60_000) {
   try { alertHandler?.(text); } catch (_) {}
 }
 const disabledUntil = { anthropic: 0, openai: 0 };
+function resetProviderState() {
+  disabledUntil.anthropic = 0;
+  disabledUntil.openai = 0;
+  lastAlertAt.clear();
+}
 function isCreditError(error) {
   return error && (error.status === 400 || error.status === 402 || error.status === 403)
     && /credit balance|billing|insufficient_quota|quota|payment/i.test(`${error.message} ${error.body || ""}`);
+}
+
+function modelClass(model) {
+  const match = String(model).match(/haiku|sonnet|opus|fable|mythos/i);
+  return match ? match[0].toLowerCase() : String(model);
 }
 
 function limiterEnabled() {
@@ -101,7 +111,8 @@ class TruncatedResponseError extends Error {
 
 // ── Anthropic Claude ─────────────────────────────────────────
 async function callAnthropic({ system, user, apiKey, model, maxTokens, temperature }) {
-  const limiter = limiterEnabled() ? sharedLimiter() : null;
+  // Har model sinfi (Haiku / Sonnet / Opus) uchun limitlar alohida — alohida navbat
+  const limiter = limiterEnabled() ? sharedLimiter(modelClass(model || DEFAULT_ANTHROPIC_MODEL)) : null;
   // max_tokens chiqish limitidan (OTPM) katta bo'lsa so'rov hech qachon sig'masdi — chegaralaymiz
   const cap = limiter ? Math.min(ANTHROPIC_MAX_OUTPUT, limiter.maxOutputTokens()) : ANTHROPIC_MAX_OUTPUT;
   const budget = Math.min(cap, Math.max(256, Math.floor(maxTokens || 8000)));
@@ -237,7 +248,8 @@ async function complete({ system, user, maxTokens = 8000, json = true, temperatu
     openaiKey: llm.openaiKey,
     openaiModel: llm.openaiModel || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
   };
-  const available = providerOrder(llm.provider, cfg);
+  const provider = llm.provider === "claude_openai" ? "anthropic" : llm.provider === "claude_claude" ? "anthropic" : llm.provider;
+  const available = providerOrder(provider, cfg);
   if (!available.length) {
     throw new Error("LLM kaliti topilmadi: ANTHROPIC_API_KEY yoki OPENAI_API_KEY o'rnating (tanlangan provayder uchun).");
   }
@@ -254,10 +266,88 @@ async function complete({ system, user, maxTokens = 8000, json = true, temperatu
   throw new Error(errors.join(" | "));
 }
 
+// ── Ish rejimlari (admin sozlamasi) ─────────────────────────
+//   anthropic      — faqat Claude (asosiy model)
+//   openai         — faqat OpenAI
+//   claude_openai  — avval arzon OpenAI modeli (2 urinish), keyin qimmat Claude
+//   claude_claude  — avval arzon Claude modeli (Haiku, 2 urinish), keyin qimmat Claude (Sonnet)
+//   both (eski)    — Claude, xato bo'lsa OpenAI (claude_openai kabi emas, oddiy zaxira)
+const LLM_MODES = ["anthropic", "openai", "claude_openai", "claude_claude"];
+const CHEAP_ATTEMPTS = 2;
+
+function cheapAnthropicModel() {
+  return process.env.ANTHROPIC_CHEAP_MODEL || DEFAULT_ANTHROPIC_FALLBACK_MODEL;
+}
+function cheapOpenAIModel() {
+  return process.env.OPENAI_CHEAP_MODEL || DEFAULT_OPENAI_MODEL;
+}
+
+// Rejim bo'yicha urinishlar zanjiri: [{provider, model, tier}]
+function cascadePlan(llm = {}) {
+  const mode = llm.provider;
+  const mainClaude = llm.anthropicModel || process.env.ANTHROPIC_MODEL || process.env.MODEL || DEFAULT_ANTHROPIC_MODEL;
+  if (mode === "claude_openai" && llm.openaiKey && llm.anthropicKey) {
+    return [
+      ...Array(CHEAP_ATTEMPTS).fill({ provider: "openai", model: llm.openaiCheapModel || cheapOpenAIModel(), tier: "cheap" }),
+      { provider: "anthropic", model: mainClaude, tier: "main" },
+    ];
+  }
+  if (mode === "claude_claude" && llm.anthropicKey) {
+    return [
+      ...Array(CHEAP_ATTEMPTS).fill({ provider: "anthropic", model: llm.anthropicCheapModel || cheapAnthropicModel(), tier: "cheap" }),
+      { provider: "anthropic", model: mainClaude, tier: "main" },
+    ];
+  }
+  return null;
+}
+
+// Urinishlar soni: kaskad rejimida kamida 3 (2 arzon + 1 qimmat)
+function attemptsFor(llm, base = 1) {
+  const plan = cascadePlan(llm);
+  return plan ? Math.max(base, plan.length) : base;
+}
+
+// N-urinish uchun LLM sozlamasi: dastlabki 2 tasi arzon model, keyingilari qimmat model
+function llmForAttempt(llm = {}, attempt = 1) {
+  const plan = cascadePlan(llm);
+  if (!plan) {
+    if (llm.provider === "claude_openai") return { ...llm, provider: llm.anthropicKey ? "anthropic" : "openai" };
+    if (llm.provider === "claude_claude") return { ...llm, provider: "anthropic" };
+    return llm;
+  }
+  const step = plan[Math.min(plan.length, Math.max(1, attempt)) - 1];
+  return step.provider === "anthropic"
+    ? { ...llm, provider: "anthropic", anthropicModel: step.model, tier: step.tier }
+    : { ...llm, provider: "openai", openaiModel: step.model, tier: step.tier };
+}
+
+// Tekshiruvli chaqiruv: javob validate()dan o'tmasa yoki xato bo'lsa keyingi (qimmatroq) urinish
+async function completeValidated({ validate = text => text, attempts = 1, ...args }) {
+  const total = attemptsFor(args.llm, attempts);
+  let lastError;
+  for (let attempt = 1; attempt <= total; attempt++) {
+    const llm = llmForAttempt(args.llm, attempt);
+    try {
+      const result = await complete({ ...args, llm });
+      return { value: await validate(result.text), ...result, tier: llm.tier || "main" };
+    } catch (error) {
+      lastError = error;
+      if (attempt < total) console.warn(`[llm] urinish ${attempt}/${total} (${llm.tier || "asosiy"} model) xato: ${String(error.message).slice(0, 160)}`);
+    }
+  }
+  throw lastError;
+}
+
 module.exports = {
   complete,
+  completeValidated,
+  cascadePlan,
+  attemptsFor,
+  llmForAttempt,
+  LLM_MODES,
   setProviderAlertHandler,
   isCreditError,
+  resetProviderState,
   providerOrder,
   isOpenAIReasoningModel,
   DEFAULT_ANTHROPIC_MODEL,

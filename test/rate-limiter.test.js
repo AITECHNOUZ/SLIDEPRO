@@ -75,3 +75,44 @@ test("Claude klienti: 529 da zaxira modelga, balans tugasa OpenAI'ga o'tadi va a
     resetSharedLimiter(null);
   }
 });
+
+test("kaskad: arzon model 2 marta yaroqsiz javob bersa qimmat modelga o'tadi", async () => {
+  const { completeValidated, cascadePlan, llmForAttempt, attemptsFor, resetProviderState } = require("../src/llm/client");
+  resetProviderState();
+  resetSharedLimiter(new RateLimiter({ requests: 1000, input: 1e7, output: 1e6 }));
+  const realFetch = global.fetch;
+  const calls = [];
+  try {
+    global.fetch = async (url, options) => {
+      const body = JSON.parse(options.body);
+      const model = body.model;
+      calls.push(model);
+      const text = model === "claude-haiku-5-5" ? "kechirasiz, JSON emas" : "{\"ok\":true}";
+      if (url.includes("anthropic")) return new Response(JSON.stringify({ content: [{ type: "text", text }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 5 } }), { status: 200 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: model === "gpt-5-mini" ? "buzuq" : "{\"ok\":true}" }, finish_reason: "stop" }] }), { status: 200 });
+    };
+    const llm = { provider: "claude_claude", anthropicKey: "k", anthropicModel: "claude-sonnet-5-5" };
+    assert.equal(attemptsFor(llm, 1), 3);
+    assert.equal(llmForAttempt(llm, 1).anthropicModel, "claude-haiku-5-5");
+    assert.equal(llmForAttempt(llm, 3).anthropicModel, "claude-sonnet-5-5");
+    const result = await completeValidated({ system: "s", user: "u", llm, validate: text => JSON.parse(text) });
+    assert.deepEqual(result.value, { ok: true });
+    assert.deepEqual(calls, ["claude-haiku-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"]);
+
+    calls.length = 0;
+    const mixed = { provider: "claude_openai", anthropicKey: "k", openaiKey: "o", anthropicModel: "claude-sonnet-5-5" };
+    assert.equal(cascadePlan(mixed)[0].provider, "openai");
+    const second = await completeValidated({ system: "s", user: "u", llm: mixed, validate: text => JSON.parse(text) });
+    assert.equal(second.provider, "anthropic");
+    assert.deepEqual(calls, ["gpt-5-mini", "gpt-5-mini", "claude-sonnet-5-5"]);
+
+    // Arzon model birinchi urinishda to'g'ri javob bersa qimmat model chaqirilmaydi
+    calls.length = 0;
+    global.fetch = async () => new Response(JSON.stringify({ content: [{ type: "text", text: "{\"ok\":1}" }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 5 } }), { status: 200 });
+    const cheapOk = await completeValidated({ system: "s", user: "u", llm, validate: text => JSON.parse(text) });
+    assert.equal(cheapOk.tier, "cheap");
+  } finally {
+    global.fetch = realFetch;
+    resetSharedLimiter(null);
+  }
+});

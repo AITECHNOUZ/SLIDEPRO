@@ -208,52 +208,79 @@ bot.callbackQuery(/^adm:toggle:(.+)$/, async (ctx) => {
   await ctx.editMessageReplyMarkup({ reply_markup: payInline() });
 });
 
-// --- AI Provayder (Taqdimot) ---
-bot.callbackQuery("adm:provider", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
-  await ctx.answerCallbackQuery();
+// --- AI rejimi (Taqdimot va Mustaqil ish) ---
+// Rejimlar: faqat Claude | faqat OpenAI | Claude+OpenAI (arzon GPT → qimmat Claude) | Claude+Claude (Haiku → Sonnet)
+// Kaskad rejimlarida avval arzon model ishlaydi; u 2 marta xato qilsa (javob formati buzilsa yoki API xatosi) qimmat model chaqiriladi.
+const MODE_LABELS = {
+  anthropic: "Faqat Claude",
+  openai: "Faqat OpenAI",
+  claude_openai: "Claude + OpenAI (arzon GPT → Claude)",
+  claude_claude: "Claude + Claude (arzon → qimmat model)",
+};
+function modelSettings() {
+  return {
+    anthropicMain: db.getSetting("anthropic_main_model", "") || config.model,
+    anthropicCheap: db.getSetting("anthropic_cheap_model", "") || process.env.ANTHROPIC_CHEAP_MODEL || "claude-haiku-5-5",
+    openaiMain: db.getSetting("openai_main_model", "") || config.openaiModel,
+    openaiCheap: db.getSetting("openai_cheap_model", "") || process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini",
+  };
+}
+function aiModeText(title, settingKey) {
   const a=config.anthropicApiKey?"✅":"❌", o=config.openaiApiKey?"✅":"❌";
-  await ctx.editMessageText(
-    "🤖 <b>Taqdimot uchun AI provayder:</b>\n\nKalitlar: Anthropic "+a+"  OpenAI "+o,
-    { parse_mode:"HTML", reply_markup: providerInline("llm_provider","prov") }
-  );
-});
-// --- AI Provayder (Mustaqil ish) ---
-bot.callbackQuery("adm:mustaqil_provider", async (ctx) => {
-  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
-  await ctx.answerCallbackQuery();
-  const a=config.anthropicApiKey?"✅":"❌", o=config.openaiApiKey?"✅":"❌";
-  await ctx.editMessageText(
-    "📝 <b>Mustaqil ish uchun AI provayder:</b>\n\nKalitlar: Anthropic "+a+"  OpenAI "+o+"\n\n<i>Tavsiya: Mustaqil ish uchun Claude (Anthropic) kontent sifati yaxshiroq.</i>",
-    { parse_mode:"HTML", reply_markup: providerInline("mustaqil_llm_provider","mprov") }
-  );
-});
+  const m = modelSettings();
+  const cur = db.getSetting(settingKey, "anthropic") || "anthropic";
+  return `${title}\n\nKalitlar: Anthropic ${a}  OpenAI ${o}\nHozirgi rejim: <b>${esc(MODE_LABELS[cur] || cur)}</b>\n\n`+
+    `<b>Modellar:</b>\n• Claude asosiy (qimmat): <code>${esc(m.anthropicMain)}</code>\n• Claude arzon: <code>${esc(m.anthropicCheap)}</code>\n`+
+    `• OpenAI asosiy: <code>${esc(m.openaiMain)}</code>\n• OpenAI arzon: <code>${esc(m.openaiCheap)}</code>\n\n`+
+    `<i>Kaskad rejimida avval arzon model ishlaydi; u 2 marta xato qilsa qimmat model ulanadi.</i>`;
+}
 function providerInline(settingKey, prefix) {
   const cur = db.getSetting(settingKey, "anthropic") || "anthropic";
   const m = (p) => cur===p ? "🔘 " : "⚪️ ";
-  return new InlineKeyboard()
-    .text(m("anthropic")+"Anthropic (Claude)", prefix+":anthropic").row()
-    .text(m("openai")+"OpenAI (GPT)", prefix+":openai").row()
-    .text(m("both")+"Ikkalasi (zaxirali)", prefix+":both").row()
+  const kb = new InlineKeyboard();
+  for (const mode of Object.keys(MODE_LABELS)) kb.text(m(mode)+MODE_LABELS[mode], prefix+":"+mode).row();
+  return kb
+    .text("✏️ Claude modellari","adm:models:anthropic").text("✏️ OpenAI modellari","adm:models:openai").row()
     .text("⬅️ Orqaga","adm:back");
 }
-bot.callbackQuery(/^prov:(anthropic|openai|both)$/, async (ctx) => {
+bot.callbackQuery("adm:provider", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
-  const p = ctx.match[1];
-  if ((p==="anthropic"||p==="both") && !config.anthropicApiKey) return ctx.answerCallbackQuery({text:"ANTHROPIC_API_KEY yo'q!",show_alert:true});
-  if ((p==="openai"||p==="both") && !config.openaiApiKey) return ctx.answerCallbackQuery({text:"OPENAI_API_KEY yo'q!",show_alert:true});
-  db.setSetting("llm_provider", p);
-  await ctx.answerCallbackQuery("Saqlandi ✅");
-  await ctx.editMessageReplyMarkup({ reply_markup: providerInline("llm_provider","prov") });
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(aiModeText("🤖 <b>Taqdimot uchun AI rejimi</b>", "llm_provider"),
+    { parse_mode:"HTML", reply_markup: providerInline("llm_provider","prov") });
 });
-bot.callbackQuery(/^mprov:(anthropic|openai|both)$/, async (ctx) => {
+bot.callbackQuery("adm:mustaqil_provider", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
-  const p = ctx.match[1];
-  if ((p==="anthropic"||p==="both") && !config.anthropicApiKey) return ctx.answerCallbackQuery({text:"ANTHROPIC_API_KEY yo'q!",show_alert:true});
-  if ((p==="openai"||p==="both") && !config.openaiApiKey) return ctx.answerCallbackQuery({text:"OPENAI_API_KEY yo'q!",show_alert:true});
-  db.setSetting("mustaqil_llm_provider", p);
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(aiModeText("📝 <b>Mustaqil ish uchun AI rejimi</b>", "mustaqil_llm_provider"),
+    { parse_mode:"HTML", reply_markup: providerInline("mustaqil_llm_provider","mprov") });
+});
+function modeKeyError(mode) {
+  const needsClaude = mode !== "openai";
+  const needsOpenAI = mode === "openai" || mode === "claude_openai";
+  if (needsClaude && !config.anthropicApiKey) return "ANTHROPIC_API_KEY yo'q!";
+  if (needsOpenAI && !config.openaiApiKey) return "OPENAI_API_KEY yo'q!";
+  return null;
+}
+bot.callbackQuery(/^(prov|mprov):(anthropic|openai|claude_openai|claude_claude)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  const [prefix, mode] = [ctx.match[1], ctx.match[2]];
+  const problem = modeKeyError(mode);
+  if (problem) return ctx.answerCallbackQuery({ text: problem, show_alert: true });
+  const key = prefix === "prov" ? "llm_provider" : "mustaqil_llm_provider";
+  db.setSetting(key, mode);
   await ctx.answerCallbackQuery("Saqlandi ✅");
-  await ctx.editMessageReplyMarkup({ reply_markup: providerInline("mustaqil_llm_provider","mprov") });
+  await ctx.editMessageText(aiModeText(prefix === "prov" ? "🤖 <b>Taqdimot uchun AI rejimi</b>" : "📝 <b>Mustaqil ish uchun AI rejimi</b>", key),
+    { parse_mode:"HTML", reply_markup: providerInline(key, prefix) }).catch(() => {});
+});
+bot.callbackQuery(/^adm:models:(anthropic|openai)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  const provider = ctx.match[1];
+  ctx.session.step = "admin_models_" + provider;
+  await ctx.answerCallbackQuery();
+  const m = modelSettings();
+  const example = provider === "anthropic" ? `${m.anthropicMain} ${m.anthropicCheap}` : `${m.openaiMain} ${m.openaiCheap}`;
+  await ctx.reply(`✏️ ${provider === "anthropic" ? "Claude" : "OpenAI"} modellarini yuboring: <code>asosiy arzon</code>\n\nMasalan:\n<code>${esc(example)}</code>\n\nStandartga qaytarish: <code>default</code>`, { parse_mode:"HTML" });
 });
 
 // --- Narx / Karta ---
@@ -497,6 +524,19 @@ bot.on("message:text", async (ctx) => {
   }
 
   // Admin kiritishlari
+  if ((step === "admin_models_anthropic" || step === "admin_models_openai") && isAdmin(ctx.from.id)) {
+    const provider = step.endsWith("anthropic") ? "anthropic" : "openai";
+    ctx.session.step = "idle";
+    if (/^default$/i.test(text.trim())) {
+      db.setSetting(provider + "_main_model", ""); db.setSetting(provider + "_cheap_model", "");
+      return ctx.reply("✅ Standart modellar tiklandi");
+    }
+    const parts = text.trim().split(/\s+/);
+    const valid = parts.length === 2 && parts.every(p => /^[A-Za-z0-9._:-]{3,80}$/.test(p));
+    if (!valid) return ctx.reply("Format: <code>asosiy_model arzon_model</code>", { parse_mode:"HTML" });
+    db.setSetting(provider + "_main_model", parts[0]); db.setSetting(provider + "_cheap_model", parts[1]);
+    return ctx.reply(`✅ Saqlandi:\nasosiy — <code>${esc(parts[0])}</code>\narzon — <code>${esc(parts[1])}</code>`, { parse_mode:"HTML" });
+  }
   if (step === "admin_price" && isAdmin(ctx.from.id)) {
     const pts = text.split(/\s+/).map(Number);
     if (pts.length<2||!Number.isFinite(pts[0])||!Number.isFinite(pts[1]))

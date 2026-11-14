@@ -40,7 +40,7 @@ const { normalizeChartData } = require("./chart-data");
 const { normalizeFormulaSource } = require("./formula-data");
 const { formulaKey } = require("./media-validation");
 const { buildMediaSlots, groupMediaSlotsByChapter, mergeMediaSlotsIntoContent } = require("./media-slots");
-const { complete } = require("../llm/client");
+const { complete, completeValidated, llmForAttempt, attemptsFor } = require("../llm/client");
 const { cleanMediaText } = require("./media-captions");
 const {
   validateBibliography,
@@ -122,9 +122,16 @@ function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
 }
 
 // ── LLM chaqiruv (Claude → OpenAI failover, src/llm/client.js) ─────────
-async function callLLM({ system, user, llm, maxTokens = 6000 }) {
-  const { text } = await complete({ system, user, llm, maxTokens });
+// attempt: kaskad rejimida 1–2 urinish arzon model, 3+ qimmat (asosiy) model
+async function callLLM({ system, user, llm, maxTokens = 6000, attempt = 1 }) {
+  const { text } = await complete({ system, user, llm: llmForAttempt(llm, attempt), maxTokens });
   return text;
+}
+
+// Bitta chaqiruvli joylar uchun: javob parse()dan o'tmasa — keyingi (qimmatroq) urinish
+async function callLLMParsed({ system, user, llm, maxTokens = 6000, parse, attempts = 1 }) {
+  const { value } = await completeValidated({ system, user, llm, maxTokens, validate: parse, attempts });
+  return value;
 }
 
 // Outline'dan KONSEPT darajasida ban-list qurish
@@ -716,7 +723,7 @@ async function renderAndVerifyMedia(item, language) {
 
 async function generateMediaSlot(slot, { chapter, topic, language, sourceContent, llm }) {
   const maxTokens = slot.type === "flowchart" ? 1800 : slot.type === "chart" || slot.type === "table" ? 1000 : 900;
-  const maxAttempts = slot.type === "chart" || slot.type === "table" ? 1 : SLOT_RETRY_LIMIT;
+  const maxAttempts = attemptsFor(llm, slot.type === "chart" || slot.type === "table" ? 1 : SLOT_RETRY_LIMIT);
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     slot._lenient = attempt === maxAttempts; // oxirgi urinishda murakkablik talabi yumshatiladi
@@ -726,6 +733,7 @@ async function generateMediaSlot(slot, { chapter, topic, language, sourceContent
         user: mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }),
         llm,
         maxTokens,
+        attempt,
       });
       const response = parseStructuredJson(text);
       const item = normalizeMediaSlotResult(slot, response, { chapter, language });
@@ -1121,13 +1129,13 @@ async function fitDocumentToPages({ spec, pngCache, buf, outline, llm, language,
       });
       const additions = await mapWithConcurrency(jobs, boundedConcurrency(), async job => {
         try {
-          const text = await callLLM({
+          const parsed = await callLLMParsed({
             system: chapterSystemPrompt(),
             user: buildExpansionPrompt({ ...job, words: job.item.words, outline, language, sourceContent }),
             llm,
             maxTokens: Math.min(6000, 800 + job.item.words * 4),
+            parse: parseChapter,
           });
-          const parsed = parseChapter(text);
           return (parsed.content || []).filter(block => block?.type === "paragraph").map(block => block.text);
         } catch (error) {
           console.warn(`[mustaqil] kengaytirish xatosi (${job.chapter.title}):`, error.message);
@@ -1202,26 +1210,27 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   // Outline zanjiri: to'liq reja → qayta urinish → yengil reja (faqat sarlavhalar) → mavzu asosidagi skelet.
   // Har qanday holatda ham hujjat davom etadi; normalizeOutlineForPages yetishmagan qismlarni to'ldiradi.
   let outline = null;
-  for (let attempt = 1; attempt <= 2 && !outline; attempt++) {
+  const outlineAttempts = attemptsFor(llm, 2);
+  for (let attempt = 1; attempt <= outlineAttempts && !outline; attempt++) {
     try {
       outline = parseOutline(await callLLM({
         system: outlineSystemPrompt(),
         user:   outlineUserPrompt({ topic, pages, language:lang, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount: requestedFlowchartCount, chartCount: requestedChartCount, formulaCount: requestedFormulaCount }),
-        llm, maxTokens: 6000, // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
+        llm, maxTokens: 6000, attempt, // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
       }));
       if (!Array.isArray(outline?.chapters) || !outline.chapters.length) throw new Error("outline'da bob yo'q");
     } catch (error) {
       outline = null;
-      console.warn(`[mustaqil] outline urinish ${attempt}/2 xato: ${error.message}`);
+      console.warn(`[mustaqil] outline urinish ${attempt}/${outlineAttempts} xato: ${error.message}`);
     }
   }
   if (!outline) {
     try {
-      outline = parseOutline(await callLLM({
+      outline = await callLLMParsed({
         system: "Sen akademik ish rejasini tuzuvchi yordamchisan. Faqat JSON qaytar.",
         user: liteOutlinePrompt({ topic, language: lang, mainChapterCount: pagePlanForWork.mainChapterCount, subsectionCount: pagePlanForWork.subsectionCount }),
-        llm, maxTokens: 2500,
-      }));
+        llm, maxTokens: 2500, parse: parseOutline,
+      });
       console.warn("[mustaqil] yengil outline ishlatildi (to'liq reja olinmadi)");
     } catch (error) {
       console.warn("[mustaqil] yengil outline ham olinmadi — mavzu skeleti bilan davom:", error.message);
@@ -1247,12 +1256,18 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   };
   if (!matchesExpectedStructure(outline)) {
     console.log("[mustaqil] outline tuzilmasi talabga mos emas, qayta so'ralmoqda...");
-    const retry = parseOutline(await callLLM({
-      system: outlineSystemPrompt(),
-      user:   outlineUserPrompt({ topic, pages, language:lang, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount: requestedFlowchartCount, chartCount: requestedChartCount, formulaCount: requestedFormulaCount }),
-      llm, maxTokens: 6000, // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
-    }));
-    if (matchesExpectedStructure(retry)) {
+    let retry = null;
+    try {
+      retry = parseOutline(await callLLM({
+        system: outlineSystemPrompt(),
+        user:   outlineUserPrompt({ topic, pages, language:lang, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount: requestedFlowchartCount, chartCount: requestedChartCount, formulaCount: requestedFormulaCount }),
+        // Kaskad rejimida tuzilmani to'g'ri chiqarish uchun asosiy (qimmat) model
+        llm, maxTokens: 6000, attempt: attemptsFor(llm, 1), // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
+      }));
+    } catch (error) {
+      console.warn("[mustaqil] outline tuzilma retry xato:", error.message);
+    }
+    if (retry && matchesExpectedStructure(retry)) {
       if (retry.meta) retry.meta.year = String(new Date().getFullYear());
       outline = retry;
       console.log("[mustaqil] outline qayta olindi вњ…");
@@ -1267,12 +1282,13 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   if (!bibliographyCheck.valid) {
     console.warn("[mustaqil] bibliografiyada til qamrovi yoki APA 7 maydonlari yetishmaydi; faqat manbalar qayta so'ralmoqda:", bibliographyCheck.problems.join("; "));
     try {
-      const repaired = parseOutline(await callLLM({
+      const repaired = await callLLMParsed({
         system: outlineSystemPrompt(),
         user: buildBibliographyRepairPrompt({ topic, language: lang, references: generatedReferences, validation: bibliographyCheck, sourceContent }),
         llm,
         maxTokens: 3500,
-      }));
+        parse: parseOutline,
+      });
       const repairedReferences = Array.isArray(repaired.references) ? repaired.references : [];
       const repairedCheck = validateBibliography(repairedReferences);
       if (repairedCheck.valid) {
@@ -1369,9 +1385,11 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
     if (task.kind === "prose") {
       const { chapter, index } = task;
       let lastError;
-      for (let attempt = 1; attempt <= SLOT_RETRY_LIMIT; attempt++) {
+      const proseAttempts = attemptsFor(llm, SLOT_RETRY_LIMIT);
+      for (let attempt = 1; attempt <= proseAttempts; attempt++) {
         try {
           const text = await callLLM({
+            attempt,
             system: chapterSystemPrompt(),
             user: chapterUserPrompt({
               chapter, outline, language: lang, sourceContent,
@@ -1385,7 +1403,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
           return { kind: "prose", index, chapter: { ...chapter, content } };
         } catch (error) {
           lastError = error;
-          console.warn(`[mustaqil] matn bob #${index} urinish ${attempt}/${SLOT_RETRY_LIMIT} xato: ${error.message}`);
+          console.warn(`[mustaqil] matn bob #${index} urinish ${attempt}/${proseAttempts} xato: ${error.message}`);
         }
       }
       return { kind: "prose", index, chapter: { ...chapter, content: [] }, error: lastError };
@@ -1489,16 +1507,15 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
           const ch = chapters[chIdx];
           // Matnni qayta so'rash media slotlarining avvalgi natijasini o'zgartirmaydi.
           try {
-            const t = await callLLM({
+            const p = await callLLMParsed({
               system: chapterSystemPrompt(),
               user: chapterUserPrompt({
                 chapter: ch, outline, language: lang, sourceContent,
                 chapterIndex: chIdx, totalChapters: outline.chapters.length,
                 mediaSlots: slotsByChapter.get(ch.id) || [], proseOnly: true,
               }),
-              llm, maxTokens: chapterTokenBudget(ch),
+              llm, maxTokens: chapterTokenBudget(ch), parse: parseChapter,
             });
-            const p = parseChapter(t);
             const normalizedContent = normalizeChapterContent(ch, p.content || [], chapterMainNumber(outline.chapters, chIdx));
             const content = mergeMediaSlotsIntoContent(ch, normalizedContent, slotsByChapter.get(ch.id) || [], mediaItems, chapterMainNumber(outline.chapters, chIdx));
             return { chIdx, content };
@@ -1566,6 +1583,7 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
         user: buildTextSlotRetryPrompt({ slot, chapter, outline, language: lang, sourceContent }),
         llm,
         maxTokens: 4000,
+        attempt: slot.retryAttempt || 1, // 1–2 arzon, 3–4 qimmat model
       });
       const parsed = parseChapter(text);
       if (parsed.slot_id && parsed.slot_id !== slot.sectionId) {
