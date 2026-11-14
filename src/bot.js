@@ -11,13 +11,15 @@ const fulfill = require("./payments/fulfill");
 const click = require("./payments/click");
 const payme = require("./payments/payme");
 const { startServer } = require("./server");
+const biz = require("./business");
 
 assertConfig();
 db.seedDefaults(config.defaults);
 
 const bot = new Bot(config.botToken);
 fulfill.init(bot);
-bot.use(session({ initial: () => ({ step: "idle", draft: {} }) }));
+// Sessiya SQLite'da saqlanadi — bot qayta ishga tushsa ham foydalanuvchi buyurtma o'rtasida qolib ketmaydi
+bot.use(session({ initial: () => ({ step: "idle", draft: {} }), storage: db.sessionStorage }));
 
 function esc(s) { return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
@@ -26,6 +28,52 @@ const isSuperAdmin = (id) => config.adminIds.includes(id);
 const isAdmin = (id) => isSuperAdmin(id) || db.isDbAdmin(id);
 const isFree = (id) => isAdmin(id) || db.isFreeUser(id);
 const needsStudentDetails = (id) => requiresStudentDetails({ isAdmin: isAdmin(id), isVip: db.isFreeUser(id) });
+
+const supportLine = () => fulfill.supportLine();
+
+// ── UMUMIY FILTRLAR: blok, texnik ishlar, faollik ─────────
+bot.use(async (ctx, next) => {
+  const id = ctx.from && ctx.from.id;
+  if (!id || (ctx.chat && ctx.chat.type !== "private")) return next();
+  try {
+    if (db.upsertUser(id, ctx.from.username, ctx.from.first_name) && db.getSetting("notify_new_users", "0") === "1") {
+      fulfill.notifyAdmins("👤 Yangi foydalanuvchi: " + (ctx.from.first_name || "") + (ctx.from.username ? " @" + ctx.from.username : "") + " (id:" + id + ")");
+    }
+  } catch (_) {}
+  if (isAdmin(id)) return next();
+  if (db.isBanned(id)) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: "Siz bloklangansiz", show_alert: true }).catch(() => {});
+    else await ctx.reply("⛔️ Siz botdan foydalanishdan cheklangansiz." + supportLine()).catch(() => {});
+    return;
+  }
+  if (db.getSetting("maintenance", "0") === "1") {
+    const text = db.getSetting("maintenance_text", "") || "🛠 Botda texnik ishlar olib borilmoqda. Birozdan keyin qayta urinib ko'ring.";
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: text.slice(0, 190), show_alert: true }).catch(() => {});
+    else await ctx.reply(text + supportLine()).catch(() => {});
+    return;
+  }
+  return next();
+});
+
+// Admin ommaviy xabar yoki shaxsiy xabar matnini kutayotgan bo'lsa — har qanday xabar turini (matn, rasm, fayl) ushlab olamiz
+bot.on("message", async (ctx, next) => {
+  const step = ctx.session.step;
+  if (!["admin_broadcast", "admin_msg_user"].includes(step) || !isAdmin(ctx.from.id)) return next();
+  if (ctx.message.text && ctx.message.text.startsWith("/")) return next();
+  if (step === "admin_msg_user") {
+    const target = ctx.session.adminTarget;
+    ctx.session.step = "idle";
+    try {
+      await bot.api.copyMessage(target, ctx.chat.id, ctx.message.message_id);
+      return ctx.reply("✅ Xabar yuborildi: " + target);
+    } catch (e) { return ctx.reply("⚠️ Yuborilmadi: " + esc(e.message)); }
+  }
+  ctx.session.step = "idle";
+  ctx.session.broadcast = { chatId: ctx.chat.id, messageId: ctx.message.message_id };
+  const count = db.listUserIdsForBroadcast().length;
+  return ctx.reply("📣 Yuqoridagi xabar <b>" + count + "</b> ta foydalanuvchiga yuborilsinmi?", { parse_mode: "HTML",
+    reply_markup: new InlineKeyboard().text("✅ Yuborish", "bc:send").text("❌ Bekor", "bc:cancel") });
+});
 
 // ── MENYULAR ───────────────────────────────────────────────
 function mainMenu(id) {
@@ -83,7 +131,6 @@ function paymentMethodsInline() {
 
 // ── /start ─────────────────────────────────────────────────
 bot.command("start", async (ctx) => {
-  db.upsertUser(ctx.from.id, ctx.from.username, ctx.from.first_name);
   ctx.session.step = "idle"; ctx.session.draft = {};
   const freeNote = isFree(ctx.from.id) ? "\n\n🎁 Sizda <b>bepul foydalanish</b> huquqi bor!" : "";
   await ctx.reply(
@@ -113,7 +160,9 @@ bot.hears("📝 Mustaqil ish yaratish", async (ctx) => {
 });
 
 bot.hears("🎁 Bepul rejim", async (ctx) => {
-  await ctx.reply("🎁 Sizda bepul huquq bor. Taqdimot yoki mustaqil ish yaratishni tanlang.");
+  const q = biz.vipQuota(ctx.from.id);
+  const quota = q.limit ? "\n\nBugungi limit: <b>" + q.used + "/" + q.limit + "</b> (qoldi: " + q.left + ")" : "";
+  await ctx.reply("🎁 Sizda bepul huquq bor. Taqdimot yoki mustaqil ish yaratishni tanlang." + quota, { parse_mode: "HTML" });
 });
 
 bot.hears("📂 Mening buyurtmalarim", async (ctx) => {
@@ -124,19 +173,32 @@ bot.hears("📂 Mening buyurtmalarim", async (ctx) => {
     const cnt = o.work_type === "mustaqil" ? (o.pages||"?")+"bet" : (o.slides||"?")+"sl";
     return type+" #"+o.id+" — "+esc((o.topic||"").slice(0,30))+" ("+cnt+") — "+statusLabel(o.status);
   });
-  await ctx.reply("📂 Buyurtmalaringiz:\n\n"+lines.join("\n"), { parse_mode:"HTML" });
+  const kb = new InlineKeyboard();
+  orders.filter(o => o.status === "done" && o.file_id).slice(0, 6).forEach((o, i) => { kb.text("📥 #" + o.id, "myfile:" + o.id); if (i % 3 === 2) kb.row(); });
+  await ctx.reply("📂 Buyurtmalaringiz:\n\n"+lines.join("\n")+(kb.inline_keyboard.flat().length ? "\n\nTayyor faylni qayta olish uchun bosing 👇" : ""),
+    { parse_mode:"HTML", reply_markup: kb.inline_keyboard.flat().length ? kb : undefined });
+});
+bot.callbackQuery(/^myfile:(\d+)$/, async (ctx) => {
+  const order = db.getOrder(parseInt(ctx.match[1], 10));
+  if (!order || order.user_tg_id !== ctx.from.id || !order.file_id) return ctx.answerCallbackQuery({ text: "Fayl topilmadi", show_alert: true });
+  await ctx.answerCallbackQuery();
+  try { await ctx.replyWithDocument(order.file_id, { caption: "📌 " + order.topic }); }
+  catch (_) { await ctx.reply("⚠️ Faylni yuborib bo'lmadi." + supportLine()); }
 });
 
 bot.hears("ℹ️ Yordam", async (ctx) => {
   await ctx.reply(
     "ℹ️ <b>Qanday ishlaydi:</b>\n\n"+
     "🎨 <b>Taqdimot</b> (.pptx):\n"+
-    "  Mavzu → Slaydlar soni → Ism+Guruh (oddiy foydalanuvchilar uchun) → Kontent → To'lov → Fayl\n\n"+
+    "  Mavzu → Slaydlar soni → Til → Titul ma'lumotlari → Kontent → To'lov → Fayl\n\n"+
     "📝 <b>Mustaqil ish</b> (.docx, GOST formati):\n"+
-    "  Mavzu → Sahifalar → Til → Ism+Guruh (oddiy foydalanuvchilar uchun) → Kontent → To'lov → Fayl\n\n"+
-    "Adminlar va VIP foydalanuvchilardan ism-guruh so'ralmaydi.\n"+
-    "📌 Formulalar, grafiklar, jadvallar avtomatik qo'shiladi.\n\n"+
-    "/cancel — bekor qilish\n/id — Telegram ID",
+    "  Mavzu → Sahifalar → Til → Titul ma'lumotlari → Mundarija → Kontent → To'lov → Fayl\n\n"+
+    "💰 Narx: taqdimot — "+biz.fmt(db.getSetting("price_per_slide","0"))+" "+currency()+"/slayd, mustaqil ish — "+
+      biz.fmt(db.getSetting("mustaqil_price_per_page", db.getSetting("price_per_slide","0")))+" "+currency()+"/sahifa\n"+
+    "🎟 Promokodingiz bo'lsa, to'lov oldidan kiriting.\n"+
+    "📌 Formulalar, grafiklar, jadvallar avtomatik qo'shiladi.\n"+
+    "📂 Tayyor fayllarni «Mening buyurtmalarim» bo'limidan qayta olish mumkin.\n\n"+
+    "/cancel — bekor qilish\n/id — Telegram ID"+supportLine(),
     { parse_mode:"HTML" }
   );
 });
@@ -148,13 +210,15 @@ bot.hears("🛠 Admin panel", async (ctx) => {
 });
 
 function adminMain(id) {
+  const pending = biz.overallCounters().awaitingApproval;
   const kb = new InlineKeyboard()
-    .text("📊 Buyurtmalar","adm:orders").row()
-    .text("💳 To'lov usullari","adm:pay").row()
-    .text("🤖 AI — Taqdimot","adm:provider").row()
-    .text("📝 AI — Mustaqil ish","adm:mustaqil_provider").row()
-    .text("💰 Narx","adm:price").text("💳 Karta","adm:card").row()
-    .text("🎁 Bepul users","adm:free").row();
+    .text("📈 Statistika","adm:stats").text("📊 Buyurtmalar"+(pending?" ("+pending+")":""),"adm:orders").row()
+    .text("🔎 Buyurtma #","adm:findorder").text("👤 Foydalanuvchi","adm:finduser").row()
+    .text("📣 Xabar yuborish","adm:broadcast").text("🎟 Promokodlar","adm:promo").row()
+    .text("💰 Narxlar","adm:price").text("💳 To'lov","adm:pay").row()
+    .text("🤖 AI — Taqdimot","adm:provider").text("📝 AI — Mustaqil","adm:mustaqil_provider").row()
+    .text("⚙️ Sozlamalar","adm:settings").text("🎁 VIP users","adm:free").row()
+    .text("📥 CSV hisobot","adm:csv").row();
   if (isSuperAdmin(id)) kb.text("👥 Adminlar","adm:admins").row();
   return kb;
 }
@@ -165,7 +229,7 @@ bot.callbackQuery("adm:orders", async (ctx) => {
   await ctx.answerCallbackQuery();
   await ctx.editMessageText("📊 <b>Buyurtmalar</b>", { parse_mode:"HTML", reply_markup: new InlineKeyboard()
     .text("✅ Tasdiqlangan","adm:ord:done").row()
-    .text("⏳ Tasdiqlanmagan","adm:ord:pending").row()
+    .text("⏳ Tasdiqlanmagan / xato","adm:ord:pending").row()
     .text("📋 Hammasi","adm:ord:all").row()
     .text("⬅️ Orqaga","adm:back") });
 });
@@ -184,7 +248,10 @@ bot.callbackQuery(/^adm:ord:(done|pending|all)$/, async (ctx) => {
         return type+" #"+o.id+" | "+statusLabel(o.status)+" | "+cnt+" | "+formatAmount(o.amount)+"\n   "+esc((o.topic||"").slice(0,40));
       }).join("\n")
     : "Bo'sh.";
-  await ctx.editMessageText(body, { parse_mode:"HTML", reply_markup: new InlineKeyboard().text("⬅️ Orqaga","adm:orders") });
+  const kb = new InlineKeyboard();
+  orders.slice(0, 12).forEach((o, i) => { kb.text("#" + o.id, "admo:show:" + o.id); if (i % 4 === 3) kb.row(); });
+  kb.row().text("⬅️ Orqaga","adm:orders");
+  await ctx.editMessageText(body, { parse_mode:"HTML", reply_markup: kb });
 });
 
 // --- To'lov usullari ---
@@ -199,9 +266,10 @@ function payInline() {
     .text(m("manual_enabled")+" Karta (chek)","adm:toggle:manual_enabled").row()
     .text(m("click_enabled")+" Click","adm:toggle:click_enabled").row()
     .text(m("payme_enabled")+" Payme","adm:toggle:payme_enabled").row()
+    .text("💳 Karta raqamini o'zgartirish","adm:card").row()
     .text("⬅️ Orqaga","adm:back");
 }
-bot.callbackQuery(/^adm:toggle:(.+)$/, async (ctx) => {
+bot.callbackQuery(/^adm:toggle:(manual_enabled|click_enabled|payme_enabled)$/, async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
   const k = ctx.match[1]; db.setSetting(k, db.getSetting(k)==="1" ? "0" : "1");
   await ctx.answerCallbackQuery(db.getSetting(k)==="1" ? "Yoqildi ✅" : "O'chirildi ❌");
@@ -311,16 +379,26 @@ bot.callbackQuery(/^adm:models:(anthropic|openai)$/, async (ctx) => {
 });
 
 // --- Narx / Karta ---
+function priceText() {
+  const tb = db.getSetting("base_price","0"), tp = db.getSetting("price_per_slide","5000");
+  const mb = db.getSetting("mustaqil_base_price", tb), mp = db.getSetting("mustaqil_price_per_page", tp);
+  return "💰 <b>Narxlar</b>\n\n"+
+    "🎨 Taqdimot: "+biz.fmt(tb)+" + "+biz.fmt(tp)+"/slayd\n   10 slayd = <b>"+biz.fmt(calcPrice(10))+" "+currency()+"</b>\n"+
+    "📝 Mustaqil ish: "+biz.fmt(mb)+" + "+biz.fmt(mp)+"/sahifa\n   15 sahifa = <b>"+biz.fmt(calcMustaqilPrice(15))+" "+currency()+"</b>";
+}
 bot.callbackQuery("adm:price", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
-  ctx.session.step = "admin_price"; await ctx.answerCallbackQuery();
-  await ctx.reply(
-    "Hozirgi:\n"+
-    "• Taqdimot: "+db.getSetting("base_price")+"+"+db.getSetting("price_per_slide")+"/slayd\n"+
-    "• Mustaqil ish: "+db.getSetting("mustaqil_price_per_page",db.getSetting("price_per_slide","5000"))+"/sahifa\n\n"+
-    "Yangi taqdimot narxini yuboring: <code>bazaviy per_slayd</code>\nMasalan: <code>0 5000</code>",
-    { parse_mode:"HTML" }
-  );
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(priceText(), { parse_mode:"HTML", reply_markup: new InlineKeyboard()
+    .text("✏️ Taqdimot narxi","adm:price:t").text("✏️ Mustaqil narxi","adm:price:m").row()
+    .text("⬅️ Orqaga","adm:back") });
+});
+bot.callbackQuery(/^adm:price:(t|m)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  const t = ctx.match[1] === "t";
+  ctx.session.step = t ? "admin_price_t" : "admin_price_m";
+  await ctx.reply((t ? "🎨 Taqdimot" : "📝 Mustaqil ish")+" narxini yuboring: <code>bazaviy "+(t ? "slayd_narxi" : "sahifa_narxi")+"</code>\nMasalan: <code>"+(t ? "0 5000" : "10000 3000")+"</code>", { parse_mode:"HTML" });
 });
 bot.callbackQuery("adm:card", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
@@ -359,6 +437,262 @@ bot.callbackQuery("adm:back", async (ctx) => {
   await ctx.editMessageText("🛠 <b>Admin panel</b>", { parse_mode:"HTML", reply_markup: adminMain(ctx.from.id) });
 });
 
+// --- Statistika / CSV ---
+bot.callbackQuery("adm:stats", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(biz.statsReport(), { parse_mode:"HTML", reply_markup: new InlineKeyboard()
+    .text("🔄 Yangilash","adm:stats").text("⬅️ Orqaga","adm:back") }).catch(() => {});
+});
+bot.callbackQuery("adm:csv", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText("📥 Qaysi davr uchun hisobot?", { reply_markup: new InlineKeyboard()
+    .text("7 kun","adm:csv:7").text("30 kun","adm:csv:30").text("Hammasi","adm:csv:0").row()
+    .text("⬅️ Orqaga","adm:back") });
+});
+bot.callbackQuery(/^adm:csv:(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery("Tayyorlanmoqda...");
+  const days = parseInt(ctx.match[1], 10);
+  const since = days ? Date.now() - days * 86400000 : 0;
+  const csv = biz.ordersCsv(since);
+  await ctx.replyWithDocument(new InputFile(Buffer.from(csv, "utf8"), "buyurtmalar_" + (days || "hammasi") + "_" + new Date().toISOString().slice(0, 10) + ".csv"),
+    { caption: "📥 Buyurtmalar hisoboti (" + (days ? days + " kun" : "hammasi") + ")" });
+});
+
+// --- Buyurtma kartasi ---
+function orderCard(o) {
+  const type = o.work_type === "mustaqil" ? "📝 Mustaqil ish" : "🎨 Taqdimot";
+  const cnt = o.work_type === "mustaqil" ? (o.pages||"?")+" sahifa" : (o.slides||"?")+" slayd";
+  const date = (t) => t ? new Date(t + 5 * 3600000).toISOString().slice(0, 16).replace("T", " ") : "—";
+  return "📋 <b>Buyurtma #"+o.id+"</b>\n\n"+type+" · "+cnt+" · "+esc(o.language||"o'zbek")+"\n"+
+    "📌 "+esc(o.topic||"")+"\n"+
+    "👤 user: <code>"+o.user_tg_id+"</code>"+(o.student_name ? " · "+esc(o.student_name)+" "+esc(o.student_group||"") : "")+"\n"+
+    "💰 "+formatAmount(o.amount||0)+" "+esc(o.currency||currency())+(o.discount ? " (chegirma "+formatAmount(o.discount)+", "+esc(o.promo_code||"")+")" : "")+
+    " · "+esc(o.payment_method||"—")+"\n"+
+    "📊 Holat: "+statusLabel(o.status)+"\n"+
+    "🕒 Yaratilgan: "+date(o.created_at)+" · Yetkazilgan: "+date(o.delivered_at)+"\n"+
+    (o.cost_usd ? "🔢 AI xarajat: $"+Number(o.cost_usd).toFixed(3)+" (≈ "+biz.fmt(o.cost_usd * biz.usdRate())+" so'm)\n" : "")+
+    (o.has_content ? "📎 Kontent yuklangan ("+String(o.content_text||"").length+" belgi)\n" : "");
+}
+function orderKb(o) {
+  const kb = new InlineKeyboard();
+  if (["awaiting_approval","awaiting_payment","rejected"].includes(o.status)) kb.text("✅ To'lovni tasdiqlash","approve:"+o.id).row();
+  if (["done","failed","paid"].includes(o.status) || (o.status === "generating" && o.created_at < Date.now() - 2 * 3600000)) kb.text("🔁 Qayta yaratish","admo:regen:"+o.id);
+  if (o.file_id) kb.text("📤 Faylni qayta yuborish","admo:resend:"+o.id);
+  kb.row();
+  if (["done","failed","paid"].includes(o.status) && !["free","promo"].includes(o.payment_method)) kb.text("💸 Pul qaytarildi","admo:refund:"+o.id);
+  kb.text("👤 Foydalanuvchi","admu:show:"+o.user_tg_id).row();
+  if (o.file_id) kb.text("📄 Faylni menga","admo:file:"+o.id).row();
+  return kb.text("⬅️ Admin panel","adm:back");
+}
+async function showOrder(ctx, id, edit) {
+  const o = db.getOrder(id);
+  if (!o) return ctx.reply("Buyurtma topilmadi: #"+id);
+  const opts = { parse_mode:"HTML", reply_markup: orderKb(o) };
+  if (edit) return ctx.editMessageText(orderCard(o), opts).catch(() => ctx.reply(orderCard(o), opts));
+  return ctx.reply(orderCard(o), opts);
+}
+bot.callbackQuery("adm:findorder", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  ctx.session.step = "admin_find_order"; await ctx.answerCallbackQuery();
+  await ctx.reply("🔎 Buyurtma raqamini yuboring (masalan: <code>125</code>):", { parse_mode:"HTML" });
+});
+bot.callbackQuery(/^admo:(show|regen|resend|refund|file):(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  const [action, id] = [ctx.match[1], parseInt(ctx.match[2], 10)];
+  const o = db.getOrder(id);
+  if (!o) return ctx.answerCallbackQuery({ text: "Topilmadi", show_alert: true });
+  if (action === "show") { await ctx.answerCallbackQuery(); return showOrder(ctx, id, !ctx.callbackQuery.message?.photo); }
+  if (action === "regen") {
+    if (o.status === "generating" && o.created_at > Date.now() - 2 * 3600000) return ctx.answerCallbackQuery({ text: "Hozir tayyorlanmoqda", show_alert: true });
+    try { db.deleteCache(fulfill.cacheKey(o)); } catch (_) {}
+    db.updateOrder(id, { status: "paid" });
+    await ctx.answerCallbackQuery({ text: "Qayta yaratish boshlandi 🔁" });
+    fulfill.fulfillOrder(id).catch((e) => console.error("[regen]", e.message));
+    return ctx.reply("🔁 #"+id+" qayta tayyorlanmoqda. Tayyor bo'lgach foydalanuvchiga avtomatik yuboriladi.");
+  }
+  if (action === "resend") {
+    if (!o.file_id) return ctx.answerCallbackQuery({ text: "Fayl yo'q", show_alert: true });
+    try { await bot.api.sendDocument(o.user_tg_id, o.file_id, { caption: "📌 "+o.topic+"\n\nBuyurtmangiz #"+id+" fayli qayta yuborildi." }); await ctx.answerCallbackQuery({ text: "Yuborildi ✅" }); }
+    catch (e) { await ctx.answerCallbackQuery({ text: "Xato: "+String(e.message).slice(0, 150), show_alert: true }); }
+    return;
+  }
+  if (action === "file") {
+    await ctx.answerCallbackQuery();
+    return ctx.replyWithDocument(o.file_id, { caption: "#"+id+" — "+o.topic }).catch((e) => ctx.reply("⚠️ "+esc(e.message)));
+  }
+  if (action === "refund") {
+    db.updateOrder(id, { status: "refunded" });
+    try { biz.releasePromo(id); } catch (_) {}
+    await ctx.answerCallbackQuery({ text: "Qaytarilgan deb belgilandi" });
+    try { await bot.api.sendMessage(o.user_tg_id, "💸 Buyurtma #"+id+" uchun to'lovingiz qaytarildi. Noqulaylik uchun uzr so'raymiz."); } catch (_) {}
+    return showOrder(ctx, id, true);
+  }
+});
+
+// --- Foydalanuvchi kartasi ---
+function userCardText(id) {
+  const s = biz.userSummary(id);
+  const u = s.user;
+  const vip = db.isFreeUser(id), banned = db.isBanned(id);
+  const date = (t) => t ? new Date(t + 5 * 3600000).toISOString().slice(0, 16).replace("T", " ") : "—";
+  const last = db.listOrdersByUser(id, 5).map(o => "  #"+o.id+" "+(o.work_type==="mustaqil"?"📝":"🎨")+" "+statusLabel(o.status)+" — "+esc((o.topic||"").slice(0, 28))).join("\n");
+  return "👤 <b>Foydalanuvchi</b> <code>"+id+"</code>\n\n"+
+    (u ? esc(u.first_name||"")+(u.username ? " @"+esc(u.username) : "")+"\n🕒 Qo'shilgan: "+date(u.created_at)+" · Oxirgi: "+date(u.last_seen)+"\n" : "⚠️ Botda ro'yxatdan o'tmagan\n")+
+    "🧾 Buyurtmalar: "+s.orders+" (bajarilgan: "+s.paid+") · To'lagan: <b>"+biz.fmt(s.spent)+" "+currency()+"</b>\n"+
+    (isAdmin(id) ? "🛠 Admin\n" : "")+(vip ? "🎁 VIP (bepul)\n" : "")+(banned ? "⛔️ Bloklangan\n" : "")+
+    (last ? "\nOxirgi buyurtmalar:\n"+last : "");
+}
+function userKb(id) {
+  const kb = new InlineKeyboard()
+    .text(db.isBanned(id) ? "✅ Blokdan chiqarish" : "⛔️ Bloklash", "admu:ban:"+id)
+    .text(db.isFreeUser(id) ? "➖ VIP olish" : "🎁 VIP berish", "admu:vip:"+id).row()
+    .text("✉️ Xabar yozish","admu:msg:"+id).row();
+  db.listOrdersByUser(id, 4).forEach(o => kb.text("#"+o.id, "admo:show:"+o.id));
+  return kb.row().text("⬅️ Admin panel","adm:back");
+}
+async function showUser(ctx, id, edit) {
+  const opts = { parse_mode:"HTML", reply_markup: userKb(id) };
+  if (edit) return ctx.editMessageText(userCardText(id), opts).catch(() => ctx.reply(userCardText(id), opts));
+  return ctx.reply(userCardText(id), opts);
+}
+bot.callbackQuery("adm:finduser", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  ctx.session.step = "admin_find_user"; await ctx.answerCallbackQuery();
+  await ctx.reply("👤 Telegram ID yoki @username yuboring:");
+});
+bot.callbackQuery(/^admu:(show|ban|vip|msg):(\d+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  const [action, id] = [ctx.match[1], parseInt(ctx.match[2], 10)];
+  if (action === "show") { await ctx.answerCallbackQuery(); return showUser(ctx, id, !ctx.callbackQuery.message?.photo); }
+  if (action === "ban") {
+    if (isAdmin(id)) return ctx.answerCallbackQuery({ text: "Adminni bloklab bo'lmaydi", show_alert: true });
+    if (!db.getUser(id)) db.upsertUser(id, "", "");
+    const next = !db.isBanned(id); db.setBanned(id, next);
+    await ctx.answerCallbackQuery({ text: next ? "Bloklandi ⛔️" : "Blokdan chiqarildi ✅" });
+    return showUser(ctx, id, true);
+  }
+  if (action === "vip") {
+    if (db.isFreeUser(id)) db.removeFreeUser(id);
+    else { db.addFreeUser(id, "", ctx.from.id); bot.api.sendMessage(id, "🎁 Sizga bepul foydalanish huquqi berildi! /start bosing.").catch(() => {}); }
+    await ctx.answerCallbackQuery({ text: "Saqlandi ✅" });
+    return showUser(ctx, id, true);
+  }
+  if (action === "msg") {
+    ctx.session.step = "admin_msg_user"; ctx.session.adminTarget = id;
+    await ctx.answerCallbackQuery();
+    return ctx.reply("✉️ "+id+" ga yuboriladigan xabarni yozing (matn, rasm yoki fayl). Bekor qilish: /cancel");
+  }
+});
+
+// --- Ommaviy xabar ---
+bot.callbackQuery("adm:broadcast", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  ctx.session.step = "admin_broadcast"; await ctx.answerCallbackQuery();
+  await ctx.reply("📣 Barcha foydalanuvchilarga yuboriladigan xabarni yuboring (matn, rasm, video yoki fayl).\nYuborishdan oldin tasdiq so'raladi. Bekor qilish: /cancel");
+});
+let broadcastRunning = false;
+bot.callbackQuery(/^bc:(send|cancel)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  const bc = ctx.session.broadcast;
+  if (ctx.match[1] === "cancel" || !bc) { ctx.session.broadcast = null; await ctx.answerCallbackQuery("Bekor qilindi"); return ctx.editMessageText("❌ Ommaviy xabar bekor qilindi."); }
+  if (broadcastRunning) return ctx.answerCallbackQuery({ text: "Boshqa xabar yuborilmoqda, kuting", show_alert: true });
+  ctx.session.broadcast = null;
+  await ctx.answerCallbackQuery("Boshlandi");
+  const ids = db.listUserIdsForBroadcast();
+  await ctx.editMessageText("📣 Yuborilmoqda: 0/"+ids.length);
+  broadcastRunning = true;
+  const status = ctx.callbackQuery.message;
+  (async () => {
+    let ok = 0, fail = 0, blocked = 0;
+    for (let i = 0; i < ids.length; i++) {
+      try { await bot.api.copyMessage(ids[i], bc.chatId, bc.messageId); ok++; }
+      catch (e) {
+        fail++;
+        if (e.error_code === 403) blocked++;
+        const wait = e.parameters && e.parameters.retry_after;
+        if (wait) { await new Promise(r => setTimeout(r, wait * 1000)); i--; fail--; continue; }
+      }
+      await new Promise(r => setTimeout(r, 40)); // ~25 xabar/s — Telegram limitidan past
+      if (i % 50 === 49) bot.api.editMessageText(status.chat.id, status.message_id, "📣 Yuborilmoqda: "+(i+1)+"/"+ids.length).catch(() => {});
+    }
+    broadcastRunning = false;
+    await bot.api.editMessageText(status.chat.id, status.message_id,
+      "✅ Ommaviy xabar tugadi\n\nYetkazildi: "+ok+"\nYetkazilmadi: "+fail+(blocked ? " (botni bloklagan: "+blocked+")" : "")).catch(() => {});
+  })().catch((e) => { broadcastRunning = false; console.error("[broadcast]", e); });
+});
+
+// --- Promokodlar ---
+function promoText() {
+  const list = biz.listPromos();
+  return "🎟 <b>Promokodlar</b>\n\n"+(list.length ? list.map(biz.promoLabel).join("\n") : "Hali yo'q.")+
+    "\n\n<i>Foydalanuvchi to'lov oldidan «🎟 Promokod» tugmasi orqali kiritadi. Har bir foydalanuvchi bitta kodni bir marta ishlatadi.</i>";
+}
+bot.callbackQuery("adm:promo", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(promoText(), { parse_mode:"HTML", reply_markup: new InlineKeyboard()
+    .text("➕ Yangi","adm:promo:add").text("➖ O'chirish","adm:promo:del").row()
+    .text("⬅️ Orqaga","adm:back") });
+});
+bot.callbackQuery(/^adm:promo:(add|del)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  if (ctx.match[1] === "add") {
+    ctx.session.step = "admin_promo_add";
+    return ctx.reply("➕ Promokod: <code>KOD qiymat [limit] [taqdimot|mustaqil] [Nkun]</code>\n\nMisollar:\n<code>BAHOR20 20%</code> — 20% chegirma, cheksiz\n<code>START 5000 100</code> — 5 000 so'm, 100 marta\n<code>MI50 50% 30 mustaqil 7kun</code> — faqat mustaqil ish, 7 kun\n<code>SOVGA 100% 10</code> — bepul, 10 marta", { parse_mode:"HTML" });
+  }
+  ctx.session.step = "admin_promo_del";
+  return ctx.reply("➖ O'chiriladigan promokodni yozing:");
+});
+
+// --- Sozlamalar ---
+const EDITABLE_SETTINGS = {
+  support_contact: { label: "📞 Yordam kontakti", hint: "Masalan: @admin_username yoki +998901234567. O'chirish: -", validate: (t) => t.length <= 64 },
+  vip_daily_limit: { label: "🎁 VIP kunlik limit", hint: "VIP foydalanuvchi kuniga nechta bepul ish olishi mumkin. 0 = cheksiz", validate: (t) => /^\d{1,3}$/.test(t) },
+  usd_rate: { label: "💱 Dollar kursi", hint: "1$ necha so'm (statistikada AI xarajatini hisoblash uchun)", validate: (t) => /^\d{3,6}$/.test(t) },
+  daily_cost_alert_usd: { label: "💸 Kunlik AI xarajat chegarasi ($)", hint: "Oshsa adminlarga ogohlantirish keladi. 0 = o'chiq", validate: (t) => /^\d{1,4}(\.\d{1,2})?$/.test(t) },
+  maintenance_text: { label: "🛠 Texnik ishlar matni", hint: "Texnik rejimda foydalanuvchiga ko'rsatiladigan matn. Standart: -", validate: (t) => t.length <= 500 },
+};
+function settingsText() {
+  const v = (k, d) => esc(db.getSetting(k, d) || d);
+  return "⚙️ <b>Sozlamalar</b>\n\n"+
+    "🛠 Texnik ishlar rejimi: <b>"+(db.getSetting("maintenance","0")==="1" ? "YOQILGAN (foydalanuvchilar to'xtatilgan)" : "o'chiq")+"</b>\n"+
+    "🔔 Yangi foydalanuvchi xabari: "+(db.getSetting("notify_new_users","0")==="1" ? "✅" : "❌")+"\n"+
+    "📞 Yordam kontakti: "+v("support_contact","—")+"\n"+
+    "🎁 VIP kunlik limit: "+(biz.vipDailyLimit() || "cheksiz")+"\n"+
+    "💱 1$ = "+biz.fmt(biz.usdRate())+" so'm\n"+
+    "💸 Kunlik AI xarajat chegarasi: "+(Number(db.getSetting("daily_cost_alert_usd","0")) > 0 ? "$"+v("daily_cost_alert_usd","0") : "o'chiq");
+}
+function settingsKb() {
+  const kb = new InlineKeyboard()
+    .text(db.getSetting("maintenance","0")==="1" ? "🟢 Botni ochish" : "🛠 Texnik rejimni yoqish","adm:flag:maintenance").row()
+    .text("🔔 Yangi user xabari","adm:flag:notify_new_users").row();
+  for (const [key, meta] of Object.entries(EDITABLE_SETTINGS)) kb.text(meta.label, "adm:set:"+key).row();
+  return kb.text("⬅️ Orqaga","adm:back");
+}
+bot.callbackQuery("adm:settings", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  await ctx.editMessageText(settingsText(), { parse_mode:"HTML", reply_markup: settingsKb() });
+});
+bot.callbackQuery(/^adm:flag:(maintenance|notify_new_users)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  const k = ctx.match[1]; db.setSetting(k, db.getSetting(k,"0")==="1" ? "0" : "1");
+  await ctx.answerCallbackQuery(db.getSetting(k)==="1" ? "Yoqildi" : "O'chirildi");
+  await ctx.editMessageText(settingsText(), { parse_mode:"HTML", reply_markup: settingsKb() }).catch(() => {});
+});
+bot.callbackQuery(/^adm:set:([a-z_]+)$/, async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  const meta = EDITABLE_SETTINGS[ctx.match[1]];
+  if (!meta) return ctx.answerCallbackQuery();
+  ctx.session.step = "admin_set"; ctx.session.adminSetting = ctx.match[1];
+  await ctx.answerCallbackQuery();
+  await ctx.reply(meta.label+"\n\n"+meta.hint+"\n\nHozirgi: "+(db.getSetting(ctx.match[1], "") || "—"));
+});
+
 // ── UMUMIY OQIM ────────────────────────────────────────────
 
 // Sahifalar soni (mustaqil ish)
@@ -381,11 +715,11 @@ bot.callbackQuery(/^slides:(.+)$/, async (ctx) => {
   const val = ctx.match[1]; await ctx.answerCallbackQuery();
   if (val === "custom") {
     ctx.session.step = "await_custom_slides";
-    return ctx.reply("Sahifa sonini yozing ("+config.minSlides+"–"+config.maxSlides+"):");
+    return ctx.reply("Slaydlar sonini yozing ("+config.minSlides+"–"+config.maxSlides+"):");
   }
   ctx.session.draft.slides = parseInt(val, 10);
   ctx.session.step = "await_lang";
-  await ctx.editMessageText("✅ Sahifa soni: "+val);
+  await ctx.editMessageText("✅ Slaydlar: "+val+" ta");
   await askLang(ctx);
 });
 
@@ -419,7 +753,7 @@ async function askLang(ctx) {
 async function askContent(ctx) {
   await ctx.reply(
     "📎 Kontent bormi?\n\n"+
-    "• <b>Yuklayman</b> — .docx/.txt/.pdf yoki matn berасиз\n"+
+    "• <b>Yuklayman</b> — .docx/.txt/.pdf yoki matn berasiz\n"+
     "• <b>AI yozsin</b> — mavzudan avtomatik yaratiladi",
     { parse_mode:"HTML", reply_markup: contentInline() }
   );
@@ -557,6 +891,19 @@ bot.on("message:text", async (ctx) => {
     return proceedToPayment(ctx);
   }
 
+  if (step === "await_promo") {
+    const d = ctx.session.draft;
+    const base = d.workType === "mustaqil" ? calcMustaqilPrice(d.pages||15) : calcPrice(d.slides||10);
+    const chk = biz.checkPromo(text, { userId: ctx.from.id, workType: d.workType || "taqdimot", amount: base });
+    if (chk.error) {
+      ctx.session.step = "await_payment_method";
+      return ctx.reply("⚠️ "+esc(chk.error), { reply_markup: new InlineKeyboard().text("🎟 Boshqa kod","promo:enter").text("➡️ Davom etish","promo:clear") });
+    }
+    d.promoCode = chk.code;
+    await ctx.reply("✅ Promokod qabul qilindi: −"+formatAmount(chk.discount)+" "+currency());
+    return proceedToPayment(ctx);
+  }
+
   // Admin kiritishlari
   if ((step === "admin_models_anthropic" || step === "admin_models_openai") && isAdmin(ctx.from.id)) {
     const provider = step.endsWith("anthropic") ? "anthropic" : "openai";
@@ -572,19 +919,50 @@ bot.on("message:text", async (ctx) => {
     await ctx.reply(`✅ Saqlandi:\nasosiy — <code>${esc(parts[0])}</code>\narzon — <code>${esc(parts[1])}</code>\n\nTekshirilmoqda...`, { parse_mode:"HTML" });
     return ctx.reply(await modelTestReport(), { parse_mode: "HTML" });
   }
-  if (step === "admin_price" && isAdmin(ctx.from.id)) {
+  if ((step === "admin_price_t" || step === "admin_price_m") && isAdmin(ctx.from.id)) {
     const pts = text.split(/\s+/).map(Number);
-    if (pts.length<2||!Number.isFinite(pts[0])||!Number.isFinite(pts[1]))
-      return ctx.reply("Format: <code>bazaviy per_slayd</code>", { parse_mode:"HTML" });
-    db.setSetting("base_price", pts[0]); db.setSetting("price_per_slide", pts[1]);
-    db.setSetting("mustaqil_price_per_page", pts[1]); // mustaqil uchun ham bir xil
+    if (pts.length !== 2 || !pts.every(n => Number.isInteger(n) && n >= 0 && n <= 10_000_000))
+      return ctx.reply("Format: <code>bazaviy birlik_narxi</code> (butun sonlar)", { parse_mode:"HTML" });
+    if (step === "admin_price_t") { db.setSetting("base_price", pts[0]); db.setSetting("price_per_slide", pts[1]); }
+    else { db.setSetting("mustaqil_base_price", pts[0]); db.setSetting("mustaqil_price_per_page", pts[1]); }
     ctx.session.step = "idle";
-    return ctx.reply("✅ Narx yangilandi");
+    return ctx.reply("✅ Narx yangilandi\n\n"+priceText(), { parse_mode:"HTML" });
+  }
+  if (step === "admin_find_order" && isAdmin(ctx.from.id)) {
+    const id = parseInt(text.replace(/^#/, ""), 10);
+    if (!Number.isFinite(id)) return ctx.reply("Raqam yuboring.");
+    ctx.session.step = "idle";
+    return showOrder(ctx, id, false);
+  }
+  if (step === "admin_find_user" && isAdmin(ctx.from.id)) {
+    let id = parseInt(text, 10);
+    if (!/^\d+$/.test(text)) { const u = db.findUserByUsername(text); id = u ? u.tg_id : NaN; }
+    if (!Number.isFinite(id)) return ctx.reply("Topilmadi. ID yoki @username yuboring.");
+    ctx.session.step = "idle";
+    return showUser(ctx, id, false);
+  }
+  if (step === "admin_promo_add" && isAdmin(ctx.from.id)) {
+    const p = biz.parsePromoInput(text);
+    if (p.error) return ctx.reply("⚠️ "+esc(p.error));
+    biz.createPromo(p, ctx.from.id); ctx.session.step = "idle";
+    return ctx.reply("✅ Promokod saqlandi:\n"+biz.promoLabel({ ...p, used: 0, max_uses: p.maxUses, work_type: p.workType, expires_at: p.expiresAt, active: 1 }), { parse_mode:"HTML" });
+  }
+  if (step === "admin_promo_del" && isAdmin(ctx.from.id)) {
+    ctx.session.step = "idle";
+    return ctx.reply(biz.deletePromo(text) ? "✅ O'chirildi" : "Bunday promokod yo'q");
+  }
+  if (step === "admin_set" && isAdmin(ctx.from.id)) {
+    const key = ctx.session.adminSetting, meta = EDITABLE_SETTINGS[key];
+    if (!meta) { ctx.session.step = "idle"; return; }
+    const value = text === "-" ? "" : text;
+    if (value && !meta.validate(value)) return ctx.reply("⚠️ Noto'g'ri qiymat. "+meta.hint);
+    db.setSetting(key, value); ctx.session.step = "idle";
+    return ctx.reply("✅ Saqlandi\n\n"+settingsText(), { parse_mode:"HTML", reply_markup: settingsKb() });
   }
   if (step === "admin_card" && isAdmin(ctx.from.id)) {
     const m = text.match(/^([\d\s]{8,})\s+(.+)$/);
     if (!m) return ctx.reply("Format: <code>raqam Familiya Ism</code>", { parse_mode:"HTML" });
-    db.setSetting("card_number",m[1].trim()); db.setSetting("card_holder",m[2].trim());
+    db.setSetting("card_number",m[1].trim().replace(/\s+/g," ")); db.setSetting("card_holder",m[2].trim());
     ctx.session.step = "idle";
     return ctx.reply("✅ Karta yangilandi");
   }
@@ -612,6 +990,11 @@ bot.on("message:text", async (ctx) => {
 
 // ── FAYL ───────────────────────────────────────────────────
 bot.on("message:document", async (ctx) => {
+  if (ctx.session.step === "await_receipt") {
+    const mime = ctx.message.document.mime_type || "";
+    if (/^image\/|pdf$/.test(mime)) return handleReceipt(ctx, { document: ctx.message.document.file_id });
+    return ctx.reply("Chekni rasm (skrinshot) yoki PDF ko'rinishida yuboring.");
+  }
   if (ctx.session.step !== "await_content_upload") return;
   const doc = ctx.message.document, name = doc.file_name||"file", ext = path.extname(name).toLowerCase();
   if (![".txt",".md",".docx",".pdf"].includes(ext)) return ctx.reply("Faqat .txt, .docx yoki .pdf.");
@@ -635,23 +1018,65 @@ bot.on("message:document", async (ctx) => {
 });
 
 // ── TO'LOV / BEPUL ─────────────────────────────────────────
+function orderFields(ctx, d, extra) {
+  return {
+    user_tg_id: ctx.from.id, work_type: d.workType||"taqdimot",
+    topic: d.topic, slides: d.slides, pages: d.pages,
+    student_name: d.studentName||"", student_group: d.studentGroup||"",
+    language: d.language||"o'zbek",
+    university: d.university||"", faculty: d.faculty||"", department: d.department||"",
+    supervisor: d.supervisor||"", include_toc: d.includeToc ? 1 : 0,
+    has_content: d.has_content, content_text: d.content_text,
+    currency: currency(), ...extra,
+  };
+}
+// Promokodni buyurtmaga biriktiradi; poyga holatida limit tugagan bo'lsa false
+function attachPromo(orderId, userId, d) {
+  if (!d.promoCode) return true;
+  const ok = biz.redeemPromo(d.promoCode, userId, orderId);
+  if (ok) db.updateOrder(orderId, { promo_code: d.promoCode, discount: d.discount || 0 });
+  return ok;
+}
+
 async function proceedToPayment(ctx) {
   const d = ctx.session.draft;
   const isMustaqil = d.workType === "mustaqil";
-  const amount = isFree(ctx.from.id) ? 0 : (isMustaqil ? calcMustaqilPrice(d.pages||15) : calcPrice(d.slides||10));
+  const baseAmount = isMustaqil ? calcMustaqilPrice(d.pages||15) : calcPrice(d.slides||10);
+  let amount = isFree(ctx.from.id) ? 0 : baseAmount;
+  d.discount = 0;
+  if (!isFree(ctx.from.id) && d.promoCode) {
+    const chk = biz.checkPromo(d.promoCode, { userId: ctx.from.id, workType: d.workType || "taqdimot", amount: baseAmount });
+    if (chk.error) { await ctx.reply("⚠️ "+esc(chk.error)+" Promokod olib tashlandi."); d.promoCode = null; }
+    else { amount = chk.final; d.discount = chk.discount; }
+  }
   d.amount = amount;
 
+  // VIP kunlik limiti (adminlarga taalluqli emas)
+  if (isFree(ctx.from.id) && !isAdmin(ctx.from.id)) {
+    const q = biz.vipQuota(ctx.from.id);
+    if (q.limit && q.left <= 0) {
+      ctx.session.step = "idle";
+      return ctx.reply("⏳ Bugungi bepul limit tugadi ("+q.limit+" ta). Ertaga yana foydalanishingiz mumkin."+supportLine(), { reply_markup: mainMenu(ctx.from.id) });
+    }
+  }
+
+  // 100% chegirmali promokod — to'lovsiz bajariladi
+  if (!isFree(ctx.from.id) && d.promoCode && amount === 0) {
+    const orderId = db.createOrder(orderFields(ctx, d, { amount: 0, status: "paid", payment_method: "promo" }));
+    if (!attachPromo(orderId, ctx.from.id, d)) {
+      db.updateOrder(orderId, { status: "rejected" });
+      d.promoCode = null;
+      await ctx.reply("⚠️ Promokod limiti hozirgina tugadi.");
+      return proceedToPayment(ctx);
+    }
+    ctx.session.step = "idle";
+    await ctx.reply("🎟 Promokod qo'llandi — to'lovsiz!\n\n📌 "+esc(d.topic)+"\n\nTayyorlanmoqda...", { parse_mode:"HTML" });
+    fulfill.fulfillOrder(orderId).catch((e)=>console.error(e));
+    return;
+  }
+
   if (isFree(ctx.from.id)) {
-    const orderId = db.createOrder({
-      user_tg_id: ctx.from.id, work_type: d.workType||"taqdimot",
-      topic: d.topic, slides: d.slides, pages: d.pages,
-      student_name: d.studentName||"", student_group: d.studentGroup||"",
-      language: d.language||"o'zbek",
-      university: d.university||"", faculty: d.faculty||"", department: d.department||"",
-      supervisor: d.supervisor||"", include_toc: d.includeToc ? 1 : 0,
-      has_content: d.has_content, content_text: d.content_text,
-      amount: 0, currency: currency(), status: "paid", payment_method: "free",
-    });
+    const orderId = db.createOrder(orderFields(ctx, d, { amount: 0, status: "paid", payment_method: "free" }));
     ctx.session.step = "idle";
     await ctx.reply(
       "🎁 Bepul rejim — to'lovsiz!\n\n📌 "+esc(d.topic)+"\n"+
@@ -665,7 +1090,9 @@ async function proceedToPayment(ctx) {
 
   ctx.session.step = "await_payment_method";
   const methods = paymentMethodsInline();
-  if (!methods.inline_keyboard.flat().length) return ctx.reply("⚠️ To'lov usullari mavjud emas.");
+  if (!methods.inline_keyboard.flat().length) return ctx.reply("⚠️ To'lov usullari vaqtincha mavjud emas."+supportLine());
+  if (!d.promoCode && biz.hasActivePromos()) methods.text("🎟 Promokod kiritish","promo:enter").row();
+  else if (d.promoCode) methods.text("✖️ Promokodni olib tashlash","promo:clear").row();
 
   await ctx.reply(
     "🧾 <b>Buyurtma:</b>\n\n"+
@@ -675,25 +1102,33 @@ async function proceedToPayment(ctx) {
     (isMustaqil && d.university ? "🏛 "+esc(d.university)+"\n" : "")+
     (isMustaqil ? "📑 "+(d.includeToc ? "Mundarija bilan" : "Reja bilan")+"\n" : "")+
     "📎 Kontent: "+(d.has_content ? "yuklangan" : "AI yaratadi")+"\n\n"+
-    "💰 <b>Narx: "+formatAmount(amount)+" "+currency()+"</b>\n\nTo'lov usuli:",
+    (d.discount ? "💰 Narx: <s>"+formatAmount(baseAmount)+"</s>\n🎟 "+esc(d.promoCode)+": −"+formatAmount(d.discount)+"\n" : "")+
+    "💰 <b>To'lov: "+formatAmount(amount)+" "+currency()+"</b>\n\nTo'lov usuli:",
     { parse_mode:"HTML", reply_markup: methods }
   );
 }
+
+bot.callbackQuery(/^promo:(enter|clear)$/, async (ctx) => {
+  if (ctx.session.step !== "await_payment_method") return ctx.answerCallbackQuery();
+  await ctx.answerCallbackQuery();
+  if (ctx.match[1] === "clear") { ctx.session.draft.promoCode = null; return proceedToPayment(ctx); }
+  ctx.session.step = "await_promo";
+  return ctx.reply("🎟 Promokodni yozing:");
+});
 
 bot.callbackQuery(/^pay:(manual|click|payme)$/, async (ctx) => {
   if (ctx.session.step !== "await_payment_method") return ctx.answerCallbackQuery();
   await ctx.answerCallbackQuery();
   const method = ctx.match[1], d = ctx.session.draft;
-  const orderId = db.createOrder({
-    user_tg_id: ctx.from.id, work_type: d.workType||"taqdimot",
-    topic: d.topic, slides: d.slides, pages: d.pages,
-    student_name: d.studentName||"", student_group: d.studentGroup||"",
-    language: d.language||"o'zbek",
-    university: d.university||"", faculty: d.faculty||"", department: d.department||"",
-    supervisor: d.supervisor||"", include_toc: d.includeToc ? 1 : 0,
-    has_content: d.has_content, content_text: d.content_text,
-    amount: d.amount, currency: currency(), status: "awaiting_payment", payment_method: method,
-  });
+  if (!d.topic) { ctx.session.step = "idle"; return ctx.reply("Buyurtma ma'lumotlari topilmadi. Qaytadan boshlang.", { reply_markup: mainMenu(ctx.from.id) }); }
+  ctx.session.step = "creating_order"; // ikki marta bosilsa ikkita buyurtma yaratilmasin
+  const orderId = db.createOrder(orderFields(ctx, d, { amount: d.amount, status: "awaiting_payment", payment_method: method }));
+  if (!attachPromo(orderId, ctx.from.id, d)) {
+    db.updateOrder(orderId, { status: "rejected" });
+    d.promoCode = null; ctx.session.step = "await_payment_method";
+    await ctx.reply("⚠️ Promokod limiti hozirgina tugadi — narx qayta hisoblandi.");
+    return proceedToPayment(ctx);
+  }
   ctx.session.draft.orderId = orderId;
   const isMustaqil = d.workType === "mustaqil";
 
@@ -724,14 +1159,24 @@ bot.callbackQuery(/^pay:(manual|click|payme)$/, async (ctx) => {
 });
 
 // ── CHEK (RASM) ────────────────────────────────────────────
-bot.on("message:photo", async (ctx) => {
-  if (ctx.session.step !== "await_receipt") { console.log("[photo] step="+ctx.session.step); return; }
-  const orderId = ctx.session.draft.orderId;
-  const order = orderId ? db.getOrder(orderId) : null;
-  if (!order) return ctx.reply("Buyurtma topilmadi. /start bilan qaytadan.");
+// Chekni qaysi buyurtmaga tegishli ekanini aniqlash: sessiyadagi buyurtma yoki oxirgi 48 soatdagi to'lanmagan karta buyurtmasi
+function receiptOrder(ctx) {
+  if (ctx.session.step === "await_receipt" && ctx.session.draft.orderId) {
+    const o = db.getOrder(ctx.session.draft.orderId);
+    if (o && o.user_tg_id === ctx.from.id) return o;
+  }
+  return db.listOrdersByUser(ctx.from.id, 5).find(o => o.status === "awaiting_payment" && o.payment_method === "manual" && o.created_at > Date.now() - 48 * 3600000) || null;
+}
+bot.on("message:photo", async (ctx) => handleReceipt(ctx, { photo: ctx.message.photo[ctx.message.photo.length-1].file_id }));
+async function handleReceipt(ctx, media) {
+  const order = receiptOrder(ctx);
+  if (!order) {
+    if (ctx.session.step === "await_receipt") return ctx.reply("Buyurtma topilmadi. /start bilan qaytadan.");
+    return ctx.reply("🤔 Bu rasm qaysi buyurtma uchun ekanini topa olmadim. Chek yuborish uchun avval buyurtma bering."+supportLine());
+  }
+  const orderId = order.id;
   db.updateOrder(orderId, { status:"awaiting_approval" });
   ctx.session.step = "idle";
-  const photo = ctx.message.photo[ctx.message.photo.length-1].file_id;
   const isMustaqil = order.work_type === "mustaqil";
   const cap = (isMustaqil ? "📝 Mustaqil ish cheki" : "🧾 Taqdimot cheki")+"\n\n"+
     "Buyurtma: #"+orderId+"\nMavzu: "+order.topic+"\n"+
@@ -743,7 +1188,11 @@ bot.on("message:photo", async (ctx) => {
   const adminIds = [...new Set([...config.adminIds, ...db.listAdmins().map(a=>a.tg_id)])];
   let notified = false;
   for (const admin of adminIds) {
-    try { await bot.api.sendPhoto(admin, photo, { caption: cap, reply_markup: kb }); notified=true; }
+    try {
+      if (media.photo) await bot.api.sendPhoto(admin, media.photo, { caption: cap, reply_markup: kb });
+      else await bot.api.sendDocument(admin, media.document, { caption: cap, reply_markup: kb });
+      notified=true;
+    }
     catch(e) { console.error("[photo] admin "+admin+" xato:", e.message); }
   }
   if (isAdmin(ctx.from.id)) {
@@ -752,7 +1201,7 @@ bot.on("message:photo", async (ctx) => {
     await ctx.reply("✅ Chek qabul qilindi. Administrator tasdiqlaydi ⏳");
   }
   if (!notified) console.error("[photo] DIQQAT: adminlarga yuborilmadi. ids="+JSON.stringify(adminIds));
-});
+}
 
 // ── TASDIQLASH / RAD ───────────────────────────────────────
 bot.callbackQuery(/^approve:(\d+)$/, async (ctx) => {
@@ -763,6 +1212,7 @@ bot.callbackQuery(/^approve:(\d+)$/, async (ctx) => {
   if (["done","paid","generating"].includes(order.status)) return ctx.answerCallbackQuery({text:"Allaqachon ishlangan ✅",show_alert:true});
   db.updateOrder(orderId, { status:"paid" });
   await ctx.answerCallbackQuery({text:"Tasdiqlandi ✅"});
+  bot.api.sendMessage(order.user_tg_id, "✅ To'lovingiz tasdiqlandi! Buyurtma #"+orderId+" tayyorlanmoqda.").catch(() => {});
   fulfill.fulfillOrder(orderId).catch((e)=>console.error("[approve]:",e.message));
   const addText = "\n\n✅ TASDIQLANDI (admin: "+ctx.from.id+")";
   try {
@@ -777,7 +1227,9 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
   const orderId = parseInt(ctx.match[1],10);
   const order = db.getOrder(orderId);
   if (!order) return ctx.answerCallbackQuery({text:"Topilmadi",show_alert:true});
+  if (["done","generating"].includes(order.status)) return ctx.answerCallbackQuery({text:"Buyurtma allaqachon bajarilgan",show_alert:true});
   db.updateOrder(orderId, { status:"rejected" });
+  try { biz.releasePromo(orderId); } catch (_) {}
   await ctx.answerCallbackQuery({text:"Rad etildi ❌"});
   const addText = "\n\n❌ RAD ETILDI (admin: "+ctx.from.id+")";
   try {
@@ -785,14 +1237,14 @@ bot.callbackQuery(/^reject:(\d+)$/, async (ctx) => {
     if (msg?.caption !== undefined) await ctx.editMessageCaption({ caption: (msg.caption||"")+addText });
     else if (msg?.text) await ctx.editMessageText(msg.text+addText);
   } catch(_){}
-  try { await bot.api.sendMessage(order.user_tg_id, "❌ Buyurtma #"+orderId+" rad etildi. Administrator bilan bog'laning."); } catch(_){}
+  try { await bot.api.sendMessage(order.user_tg_id, "❌ Buyurtma #"+orderId+" bo'yicha to'lov tasdiqlanmadi (chek topilmadi yoki summa mos emas). Xato bo'lsa, administrator bilan bog'laning."+supportLine()); } catch(_){}
 });
 
 // ── STATUS ─────────────────────────────────────────────────
 function statusLabel(s) {
   return ({draft:"qoralama",awaiting_payment:"⏳ to'lov kutilmoqda",awaiting_approval:"🔄 tasdiq kutilmoqda",
     paid:"💰 to'langan",generating:"⚙️ tayyorlanmoqda",done:"✅ tayyor",
-    rejected:"❌ rad",failed:"⚠️ xato",free:"🎁 bepul"})[s]||s;
+    rejected:"❌ rad",failed:"⚠️ xato",free:"🎁 bepul",refunded:"💸 qaytarilgan"})[s]||s;
 }
 
 bot.catch((err) => { console.error("Bot xatosi:", err.error||err); });

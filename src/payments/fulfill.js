@@ -147,6 +147,7 @@ async function fulfillOrder(orderId) {
     });
     res = tracked.result;
     usageInfo = formatUsage(tracked.usage);
+    try { updateOrder(orderId, { cost_usd: Number(tracked.usage.cost || 0) }); } catch (_) {}
     if (usageInfo) console.log(`[fulfill] #${orderId} sarf: ${usageInfo.replace(/\n/g, " | ")}`);
 
     const caption = isMustaqil
@@ -188,18 +189,20 @@ async function fulfillOrder(orderId) {
       catch (e) { console.error("[fulfill] kesh saqlashda xato:", e.message); }
     }
 
-    updateOrder(orderId, { status: "done", file_path: outFile, file_id: fileId || null });
+    updateOrder(orderId, { status: "done", file_path: outFile, file_id: fileId || null, delivered_at: Date.now() });
+    try { const alert = require("../business").checkDailyCostAlert(); if (alert) notifyAdmins(alert); } catch (_) {}
     console.log(`[fulfill] #${orderId} muvaffaqiyatli yetkazildi (provider=${res.usedProvider || llmProvider})`);
   } catch (e) {
-    updateOrder(orderId, { status: "failed" });
+    updateOrder(orderId, { status: "failed", ...(e.usage ? { cost_usd: Number(e.usage.cost || 0) } : {}) });
     console.error(`[fulfill] #${orderId} GENERATSIYA XATOSI:`, e.message);
     if (progress) await progress.fail(e.message);
     try {
       await _bot.api.sendMessage(order.user_tg_id, isMustaqil
-        ? "⚠️ Mustaqil ishni tayyorlashda xatolik yuz berdi. Administrator bilan bog'laning."
-        : "⚠️ Taqdimot yaratishda xatolik yuz berdi. Administrator bilan bog'laning.");
+        ? "⚠️ Mustaqil ishni tayyorlashda xatolik yuz berdi. Administratorga xabar berildi — ish qayta tayyorlanib yuboriladi yoki pulingiz qaytariladi." + supportLine()
+        : "⚠️ Taqdimot yaratishda xatolik yuz berdi. Administratorga xabar berildi — ish qayta tayyorlanib yuboriladi yoki pulingiz qaytariladi." + supportLine());
     } catch (_) {}
-    notifyAdmins(`❌ Buyurtma #${orderId} generatsiyada xato: ${e.message}`);
+    notifyAdmins(`❌ Buyurtma #${orderId} generatsiyada xato: ${String(e.message).slice(0, 500)}`,
+      { inline_keyboard: [[{ text: "🔁 Qayta yaratish", callback_data: "admo:regen:" + orderId }, { text: "📋 Buyurtma", callback_data: "admo:show:" + orderId }]] });
   }
 }
 
@@ -237,11 +240,16 @@ async function resumeStuckOrders(listOrdersByStatuses) {
   }
 }
 
-function notifyAdmins(text) {
+function supportLine() {
+  const contact = getSetting("support_contact", "");
+  return contact ? "\n\n📞 Yordam: " + contact : "";
+}
+
+function notifyAdmins(text, replyMarkup) {
   let ids = [...config.adminIds];
   try { const { listAdmins } = require("../db"); ids = ids.concat(listAdmins().map((a) => a.tg_id)); } catch (_) {}
   ids = [...new Set(ids)];
-  for (const id of ids) { _bot.api.sendMessage(id, text).catch(() => {}); }
+  for (const id of ids) { _bot.api.sendMessage(id, text, replyMarkup ? { reply_markup: replyMarkup } : undefined).catch(() => {}); }
 }
 
-module.exports = { init, fulfillOrder, notifyAdmins, cacheKey, withRetries, resumeStuckOrders };
+module.exports = { init, fulfillOrder, notifyAdmins, supportLine, cacheKey, withRetries, resumeStuckOrders };

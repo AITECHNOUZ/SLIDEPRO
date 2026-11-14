@@ -71,6 +71,39 @@ CREATE TABLE IF NOT EXISTS cache (
 const migrate = (col, def="TEXT") => { try { db.prepare("SELECT "+col+" FROM orders LIMIT 1").get(); } catch(e) { try { db.exec("ALTER TABLE orders ADD COLUMN "+col+" "+def); } catch(_) {} } };
 migrate("file_id"); migrate("work_type"); migrate("pages","INTEGER"); migrate("student_name"); migrate("student_group"); migrate("language");
 migrate("university"); migrate("faculty"); migrate("department"); migrate("supervisor"); migrate("include_toc","INTEGER");
+migrate("cost_usd","REAL"); migrate("promo_code"); migrate("discount","INTEGER"); migrate("delivered_at","INTEGER");
+try { db.prepare("SELECT banned FROM users LIMIT 1").get(); } catch (_) { try { db.exec("ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0"); } catch (_) {} }
+try { db.prepare("SELECT last_seen FROM users LIMIT 1").get(); } catch (_) { try { db.exec("ALTER TABLE users ADD COLUMN last_seen INTEGER"); } catch (_) {} }
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS promo_codes (
+  code TEXT PRIMARY KEY,
+  kind TEXT,            -- 'percent' | 'fixed'
+  value INTEGER,
+  max_uses INTEGER DEFAULT 0, -- 0 = cheksiz
+  used INTEGER DEFAULT 0,
+  work_type TEXT DEFAULT '', -- '' = hammasi, 'taqdimot' | 'mustaqil'
+  expires_at INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
+  created_by INTEGER,
+  created_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS promo_uses (
+  code TEXT,
+  user_tg_id INTEGER,
+  order_id INTEGER,
+  created_at INTEGER,
+  PRIMARY KEY (code, user_tg_id)
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_tg_id);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
+`);
 
 
 // ---- settings ----
@@ -96,11 +129,36 @@ function seedDefaults(defaults) {
 }
 
 // ---- users ----
+// true qaytaradi — agar foydalanuvchi yangi bo'lsa
 function upsertUser(tgId, username, firstName) {
-  db.prepare(`INSERT INTO users(tg_id,username,first_name,created_at) VALUES(?,?,?,?)
-    ON CONFLICT(tg_id) DO UPDATE SET username=excluded.username, first_name=excluded.first_name`)
-    .run(tgId, username || "", firstName || "", Date.now());
+  const existed = !!db.prepare("SELECT 1 FROM users WHERE tg_id = ?").get(tgId);
+  const now = Date.now();
+  db.prepare(`INSERT INTO users(tg_id,username,first_name,created_at,last_seen) VALUES(?,?,?,?,?)
+    ON CONFLICT(tg_id) DO UPDATE SET username=excluded.username, first_name=excluded.first_name, last_seen=excluded.last_seen`)
+    .run(tgId, username || "", firstName || "", now, now);
+  return !existed;
 }
+function getUser(tgId) { return db.prepare("SELECT * FROM users WHERE tg_id = ?").get(tgId); }
+function findUserByUsername(username) {
+  return db.prepare("SELECT * FROM users WHERE lower(username) = lower(?)").get(String(username || "").replace(/^@/, ""));
+}
+function setBanned(tgId, banned) { db.prepare("UPDATE users SET banned = ? WHERE tg_id = ?").run(banned ? 1 : 0, tgId); }
+function isBanned(tgId) { const row = db.prepare("SELECT banned FROM users WHERE tg_id = ?").get(tgId); return !!(row && row.banned); }
+function listUserIdsForBroadcast() { return db.prepare("SELECT tg_id FROM users WHERE COALESCE(banned,0) = 0 ORDER BY tg_id").all().map(row => row.tg_id); }
+
+// ---- sessiyalar (bot qayta ishga tushganda yo'qolmasligi uchun) ----
+const sessionStorage = {
+  read(key) {
+    const row = db.prepare("SELECT value FROM sessions WHERE key = ?").get(key);
+    if (!row) return undefined;
+    try { return JSON.parse(row.value); } catch (_) { return undefined; }
+  },
+  write(key, value) {
+    db.prepare("INSERT INTO sessions(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")
+      .run(key, JSON.stringify(value), Date.now());
+  },
+  delete(key) { db.prepare("DELETE FROM sessions WHERE key = ?").run(key); },
+};
 
 // ---- orders ----
 function createOrder(o) {
@@ -177,7 +235,8 @@ function deleteCache(key) { db.prepare("DELETE FROM cache WHERE cache_key = ?").
 
 module.exports = {
   db, getSetting, setSetting, getAllSettings, seedDefaults,
-  upsertUser, createOrder, getOrder, updateOrder,
+  upsertUser, getUser, findUserByUsername, setBanned, isBanned, listUserIdsForBroadcast, sessionStorage,
+  createOrder, getOrder, updateOrder,
   listOrdersByUser, listRecentOrders, findOrderByProviderTx, listOrdersByStatuses,
   addAdmin, removeAdmin, isDbAdmin, listAdmins,
   addFreeUser, removeFreeUser, isFreeUser, listFreeUsers,
