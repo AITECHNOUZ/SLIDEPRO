@@ -17,6 +17,7 @@ const crypto = require("crypto");
 const { postJsonWithRetry } = require("../mustaqil/llm-http");
 const { sharedLimiter, estimateTokens } = require("./rate-limiter");
 const { recordUsage } = require("./usage");
+const { AsyncLocalStorage } = require("async_hooks");
 
 const ANTHROPIC_URL = process.env.ANTHROPIC_BASE_URL
   ? `${process.env.ANTHROPIC_BASE_URL.replace(/\/+$/, "")}/v1/messages`
@@ -264,7 +265,8 @@ async function callProviderModel(name, args, cfg, model) {
  * Matn generatsiyasi (failover bilan).
  * @returns {Promise<{text: string, provider: string}>}
  */
-async function complete({ system, user, maxTokens = 8000, json = true, temperature, llm = {} }) {
+async function complete({ system, user, maxTokens = 8000, json = true, temperature, llm: requested = {} }) {
+  const llm = effectiveLlm(requested);
   const cfg = {
     anthropicKey: llm.anthropicKey,
     anthropicModel: llm.anthropicModel || process.env.ANTHROPIC_MODEL || process.env.MODEL || DEFAULT_ANTHROPIC_MODEL,
@@ -272,7 +274,7 @@ async function complete({ system, user, maxTokens = 8000, json = true, temperatu
     openaiModel: llm.openaiModel || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
   };
   const provider = llm.provider === "claude_openai" ? "anthropic" : llm.provider === "claude_claude" ? "anthropic" : llm.provider;
-  const available = providerOrder(provider, cfg);
+  const available = llm.strict ? providerOrder(provider, cfg).filter(name => name === provider) : providerOrder(provider, cfg);
   if (!available.length) {
     throw new Error("LLM kaliti topilmadi: ANTHROPIC_API_KEY yoki OPENAI_API_KEY o'rnating (tanlangan provayder uchun).");
   }
@@ -281,12 +283,114 @@ async function complete({ system, user, maxTokens = 8000, json = true, temperatu
     try {
       const text = await callProvider(name, { system, user, maxTokens, json, temperature }, cfg);
       if (!text) throw new Error("bo'sh javob");
-      return { text, provider: name };
+      const okState = fallbackState(); if (okState) okState.pendingApiFailure = false;
+      return { text, provider: name, model: name === "anthropic" ? cfg.anthropicModel : cfg.openaiModel };
     } catch (error) {
       errors.push(`${name}: ${error.message}`);
     }
   }
-  throw new Error(errors.join(" | "));
+  const failure = new Error(errors.join(" | "));
+  reportFailure(llm, failure.message);
+  const st = fallbackState();
+  if (st) st.pendingApiFailure = true; // callLLM qayta urinishda buni ikkinchi marta sanamasin
+  throw failure;
+}
+
+// ── Zaxira modellar (fallback) ─────────────────────────────
+// Asosiy model ketma-ket 3 marta javob bera olmasa (API xatosi yoki javob formati buzilgan) —
+// ish keyingi zaxira modelga o'tadi: avval boshqa provayder, keyin boshqa modellar.
+// Holat bitta buyurtma (ish) ichida saqlanadi: model almashsa, qolgan bo'limlar ham ishlaydigan modelda davom etadi.
+const FALLBACK_AFTER_FAILURES = 3;
+const fallbackStorage = new AsyncLocalStorage();
+
+function mainModelOf(llm, provider) {
+  return provider === "anthropic"
+    ? (llm.anthropicModel || process.env.ANTHROPIC_MODEL || process.env.MODEL || DEFAULT_ANTHROPIC_MODEL)
+    : (llm.openaiModel || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL);
+}
+function primaryProviderOf(llm = {}) {
+  if (llm.provider === "openai") return "openai";
+  if (llm.provider === "claude_openai" && !llm.anthropicKey) return "openai";
+  return llm.anthropicKey ? "anthropic" : "openai";
+}
+
+// "openai:gpt-5, anthropic:claude-opus-5-5" yoki ["openai:gpt-5"] → [{provider, model}]
+function parseFallbackModels(value) {
+  const items = Array.isArray(value) ? value : String(value || "").split(/[,\s]+/);
+  return items.map(item => {
+    if (item && typeof item === "object") return item;
+    const m = String(item).trim().match(/^(anthropic|claude|openai|gpt):([A-Za-z0-9._:-]{2,80})$/i);
+    if (!m) return null;
+    return { provider: /^(anthropic|claude)$/i.test(m[1]) ? "anthropic" : "openai", model: m[2] };
+  }).filter(Boolean);
+}
+
+// Zaxira zanjiri: sozlamada berilgan bo'lsa o'sha, aks holda standart tartib
+function fallbackChain(llm = {}) {
+  if (/^off$/i.test(String(llm.fallbackModels || "").trim())) return [];
+  const primary = primaryProviderOf(llm);
+  const used = new Set([`${primary}:${mainModelOf(llm, primary)}`]);
+  let candidates = parseFallbackModels(llm.fallbackModels);
+  if (!candidates.length) {
+    const other = primary === "anthropic" ? "openai" : "anthropic";
+    const claudeMain = mainModelOf(llm, "anthropic");
+    candidates = [
+      { provider: other, model: mainModelOf(llm, other) },
+      { provider: "anthropic", model: /opus/i.test(claudeMain) ? "claude-sonnet-5-5" : "claude-opus-5-5" },
+      { provider: "openai", model: /^gpt-5$/i.test(mainModelOf(llm, "openai")) ? "gpt-5-mini" : "gpt-5" },
+      { provider: "anthropic", model: "claude-haiku-5-5" },
+    ];
+  }
+  const keyOk = c => (c.provider === "anthropic" ? llm.anthropicKey : llm.openaiKey);
+  const out = [];
+  for (const c of candidates) {
+    const id = `${c.provider}:${c.model}`;
+    if (!keyOk(c) || used.has(id)) continue;
+    used.add(id); out.push(c);
+  }
+  return out.slice(0, Math.max(0, Number(llm.maxFallbacks ?? 3)));
+}
+
+function fallbackLlm(llm, step) {
+  return step.provider === "anthropic"
+    ? { ...llm, provider: "anthropic", anthropicModel: step.model, tier: "fallback", strict: true }
+    : { ...llm, provider: "openai", openaiModel: step.model, tier: "fallback", strict: true };
+}
+
+// Butun ish (buyurtma) davomida zaxira holatini saqlash
+function runWithFallback(fn) {
+  return fallbackStorage.run({ failures: 0, level: 0, chain: null, switches: [] }, fn);
+}
+function fallbackState() { return fallbackStorage.getStore() || null; }
+
+// Joriy holatga ko'ra haqiqatda ishlatiladigan sozlama
+function effectiveLlm(llm = {}) {
+  const st = fallbackState();
+  if (!st || !st.level || llm.tier === "fallback") return llm;
+  if (!st.chain) st.chain = fallbackChain(llm);
+  const step = st.chain[st.level - 1];
+  return step ? fallbackLlm(llm, step) : llm;
+}
+
+// Asosiy (yoki joriy zaxira) model xato qildi; arzon kaskad urinishlari hisobga olinmaydi
+function reportFailure(llm = {}, reason = "") {
+  const st = fallbackState();
+  if (!st || llm.tier === "cheap") return false;
+  st.failures++;
+  if (st.failures < FALLBACK_AFTER_FAILURES) return false;
+  if (!st.chain) st.chain = fallbackChain(llm);
+  if (st.level >= st.chain.length) { st.failures = 0; return false; }
+  const from = st.level ? st.chain[st.level - 1] : { provider: primaryProviderOf(llm), model: mainModelOf(llm, primaryProviderOf(llm)) };
+  st.level++; st.failures = 0;
+  const to = st.chain[st.level - 1];
+  st.switches.push(`${from.model} → ${to.model}`);
+  console.warn(`[llm] ${from.model} ketma-ket ${FALLBACK_AFTER_FAILURES} marta javob bermadi — zaxira modelga o'tildi: ${to.provider}:${to.model} (${String(reason).slice(0, 120)})`);
+  alertOnce(`fallback:${from.model}:${to.model}`, `${from.model} ketma-ket ${FALLBACK_AFTER_FAILURES} marta javob bera olmadi — ish zaxira model ${to.model} bilan davom etmoqda. Sabab: ${String(reason).slice(0, 160)}`);
+  return true;
+}
+function reportSuccess() {
+  const st = fallbackState();
+  if (st) st.failures = 0;
 }
 
 // ── Ish rejimlari (admin sozlamasi) ─────────────────────────
@@ -346,19 +450,44 @@ function llmForAttempt(llm = {}, attempt = 1) {
 
 // Tekshiruvli chaqiruv: javob validate()dan o'tmasa yoki xato bo'lsa keyingi (qimmatroq) urinish
 async function completeValidated({ validate = text => text, attempts = 1, ...args }) {
-  const total = attemptsFor(args.llm, attempts);
-  let lastError;
-  for (let attempt = 1; attempt <= total; attempt++) {
-    const llm = llmForAttempt(args.llm, attempt);
-    try {
-      const result = await complete({ ...args, llm });
-      return { value: await validate(result.text), ...result, tier: llm.tier || "main" };
-    } catch (error) {
-      lastError = error;
-      if (attempt < total) console.warn(`[llm] urinish ${attempt}/${total} (${llm.tier || "asosiy"} model) xato: ${String(error.message).slice(0, 160)}`);
+  const run = async () => {
+    // Asosiy model kamida 3 marta (kaskadda: 2 arzon + 1 qimmat) sinab ko'riladi
+    const total = Math.max(attemptsFor(args.llm, attempts), FALLBACK_AFTER_FAILURES);
+    let lastError;
+    for (let attempt = 1; attempt <= total; attempt++) {
+      const llm = llmForAttempt(args.llm, Math.min(attempt, attemptsFor(args.llm, attempts)));
+      try {
+        const result = await complete({ ...args, llm });
+        let value;
+        try { value = await validate(result.text); }
+        catch (error) { reportFailure(effectiveLlm(llm), error.message); throw error; }
+        reportSuccess();
+        return { value, ...result, tier: effectiveLlm(llm).tier || llm.tier || "main" };
+      } catch (error) {
+        lastError = error;
+        // Zaxira modelga o'tilgan bo'lsa, qolgan urinishlar effectiveLlm orqali avtomatik o'sha modelda
+        if (attempt < total) console.warn(`[llm] urinish ${attempt}/${total} (${llm.tier || "asosiy"} model) xato: ${String(error.message).slice(0, 160)}`);
+      }
     }
-  }
-  throw lastError;
+    // Shu chaqiruv uchun zaxira zanjiri: har bir modelga bittadan urinish
+    const st = fallbackState();
+    const chain = (st && st.chain) || fallbackChain(args.llm);
+    for (let i = st ? Math.max(0, st.level - 1) : 0; i < chain.length; i++) {
+      const llm = fallbackLlm(args.llm, chain[i]);
+      try {
+        const result = await complete({ ...args, llm });
+        const value = await validate(result.text);
+        if (st) { st.chain = chain; if (st.level < i + 1) { st.switches.push(`→ ${chain[i].model}`); st.level = i + 1; } st.failures = 0; }
+        console.warn(`[llm] zaxira model ${chain[i].provider}:${chain[i].model} javob berdi`);
+        return { value, ...result, tier: "fallback" };
+      } catch (error) {
+        lastError = error;
+        console.warn(`[llm] zaxira model ${chain[i].model} ham xato: ${String(error.message).slice(0, 160)}`);
+      }
+    }
+    throw lastError;
+  };
+  return fallbackState() ? run() : runWithFallback(run);
 }
 
 // Admin model nomini kiritganda: kalit va model haqiqatan ishlashini tekshirish (kichik so'rov)
@@ -374,6 +503,13 @@ module.exports = {
   testModel,
   modelOutputCap,
   completeValidated,
+  fallbackChain,
+  parseFallbackModels,
+  runWithFallback,
+  fallbackState,
+  reportFailure,
+  reportSuccess,
+  effectiveLlm,
   cascadePlan,
   attemptsFor,
   llmForAttempt,

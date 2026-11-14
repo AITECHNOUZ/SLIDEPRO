@@ -129,13 +129,17 @@ async function fulfillOrder(orderId) {
     openaiKey: config.openaiApiKey,
     openaiModel: setting("openai_main_model", config.openaiModel),
     openaiCheapModel: setting("openai_cheap_model", process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini"),
+    // Asosiy model 3 marta javob bermasa o'tiladigan zaxira modellar (admin sozlamasi; bo'sh — standart zanjir)
+    fallbackModels: setting("fallback_models", process.env.LLM_FALLBACK_MODELS || ""),
   };
+  const { runWithFallback, fallbackState } = require("../llm/client");
+  let fallbackInfo = "";
 
   const { trackUsage, formatUsage } = require("../llm/usage");
   let usageInfo = null;
   try {
     let res;
-    const tracked = await trackUsage(async () => {
+    const tracked = await trackUsage(() => runWithFallback(async () => {
     if (isMustaqil) {
       await acquireMustaqilSlot(position => _bot.api.sendMessage(order.user_tg_id,
         `🕒 Sizning mustaqil ishingiz navbatda (${position}-o'rin). Oldingi ish tugashi bilan avtomatik boshlanadi.`));
@@ -174,8 +178,10 @@ async function fulfillOrder(orderId) {
         releaseTaqdimotSlot();
       }
     }
+    const st = fallbackState();
+    if (st && st.switches.length) fallbackInfo = "🔀 Zaxira model: " + st.switches.join(", ");
     return res;
-    });
+    }));
     res = tracked.result;
     usageInfo = formatUsage(tracked.usage);
     try { updateOrder(orderId, { cost_usd: Number(tracked.usage.cost || 0) }); } catch (_) {}
@@ -194,7 +200,7 @@ async function fulfillOrder(orderId) {
           : `🆕 #${orderId} | 🎨 Taqdimot | ${order.topic} | ${res.slideCount} slayd`;
         // Kanal (admin) xabarida haqiqiy token sarfi va taxminiy narx
         const sent = await _bot.api.sendDocument(config.deliveryChannelId, new InputFile(outFile), {
-          caption: (channelCap + (usageInfo ? "\n" + usageInfo : "")).slice(0, 1000),
+          caption: (channelCap + (usageInfo ? "\n" + usageInfo : "") + (fallbackInfo ? "\n" + fallbackInfo : "")).slice(0, 1000),
         });
         fileId = sent.document && sent.document.file_id;
         channelMsgId = sent.message_id;

@@ -330,6 +330,14 @@ function modelSettings() {
     openaiCheap: db.getSetting("openai_cheap_model", "") || process.env.OPENAI_CHEAP_MODEL || "gpt-5-mini",
   };
 }
+function fallbackPreview(settingKey) {
+  const { fallbackChain } = require("./llm/client");
+  const m = modelSettings();
+  return fallbackChain({ provider: db.getSetting(settingKey, "anthropic") || "anthropic",
+    anthropicKey: config.anthropicApiKey, openaiKey: config.openaiApiKey,
+    anthropicModel: m.anthropicMain, openaiModel: m.openaiMain,
+    fallbackModels: db.getSetting("fallback_models", "") || process.env.LLM_FALLBACK_MODELS || "" });
+}
 function aiModeText(title, settingKey) {
   const a=config.anthropicApiKey?"✅":"❌", o=config.openaiApiKey?"✅":"❌";
   const m = modelSettings();
@@ -337,7 +345,9 @@ function aiModeText(title, settingKey) {
   return `${title}\n\nKalitlar: Anthropic ${a}  OpenAI ${o}\nHozirgi rejim: <b>${esc(MODE_LABELS[cur] || cur)}</b>\n\n`+
     `<b>Modellar:</b>\n• Claude asosiy (qimmat): <code>${esc(m.anthropicMain)}</code>\n• Claude arzon: <code>${esc(m.anthropicCheap)}</code>\n`+
     `• OpenAI asosiy: <code>${esc(m.openaiMain)}</code>\n• OpenAI arzon: <code>${esc(m.openaiCheap)}</code>\n\n`+
-    `<i>Kaskad rejimida avval arzon model ishlaydi; u 2 marta xato qilsa qimmat model ulanadi.</i>`;
+    `🔀 <b>Zaxira modellar</b> (asosiy model 3 marta javob bermasa, ketma-ket):\n`+
+    (fallbackPreview(settingKey).map((c, i) => `${i+1}. <code>${esc(c.provider+":"+c.model)}</code>`).join("\n") || "— (ikkinchi kalit yoki model yo'q)")+"\n\n"+
+    `<i>Kaskad rejimida avval arzon model ishlaydi; u 2 marta xato qilsa qimmat model ulanadi. Qimmat model ham 3 marta javob bermasa — zaxira modellarga o'tiladi.</i>`;
 }
 function providerInline(settingKey, prefix) {
   const cur = db.getSetting(settingKey, "anthropic") || "anthropic";
@@ -346,7 +356,7 @@ function providerInline(settingKey, prefix) {
   for (const mode of Object.keys(MODE_LABELS)) kb.text(m(mode)+MODE_LABELS[mode], prefix+":"+mode).row();
   return kb
     .text("✏️ Claude modellari","adm:models:anthropic").text("✏️ OpenAI modellari","adm:models:openai").row()
-    .text("🧪 Modellarni tekshirish","adm:models_test").row()
+    .text("🔀 Zaxira modellar","adm:fallback").text("🧪 Tekshirish","adm:models_test").row()
     .text("⬅️ Orqaga","adm:back");
 }
 bot.callbackQuery("adm:provider", async (ctx) => {
@@ -400,6 +410,13 @@ async function modelTestReport() {
   }));
   return "🧪 <b>Modellar tekshiruvi</b>\n\n" + lines.join("\n");
 }
+bot.callbackQuery("adm:fallback", async (ctx) => {
+  if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
+  ctx.session.step = "admin_fallback"; await ctx.answerCallbackQuery();
+  await ctx.reply("🔀 Zaxira modellar tartibini yuboring (provayder:model, vergul bilan):\n\n"+
+    "<code>openai:gpt-5, anthropic:claude-opus-5-5, anthropic:claude-haiku-5-5</code>\n\n"+
+    "Hozirgi: <code>"+esc(db.getSetting("fallback_models","") || "standart")+"</code>\nStandart tartib: <code>default</code>\nO'chirish: <code>off</code>", { parse_mode:"HTML" });
+});
 bot.callbackQuery("adm:models_test", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
   await ctx.answerCallbackQuery("Tekshirilmoqda...");
@@ -986,6 +1003,21 @@ bot.on("message:text", async (ctx) => {
     db.setSetting(provider + "_main_model", parts[0]); db.setSetting(provider + "_cheap_model", parts[1]);
     await ctx.reply(`✅ Saqlandi:\nasosiy — <code>${esc(parts[0])}</code>\narzon — <code>${esc(parts[1])}</code>\n\nTekshirilmoqda...`, { parse_mode:"HTML" });
     return ctx.reply(await modelTestReport(), { parse_mode: "HTML" });
+  }
+  if (step === "admin_fallback" && isAdmin(ctx.from.id)) {
+    const { parseFallbackModels } = require("./llm/client");
+    const t = text.trim();
+    if (/^default$/i.test(t)) db.setSetting("fallback_models", "");
+    else if (/^off$/i.test(t)) db.setSetting("fallback_models", "off");
+    else {
+      const list = parseFallbackModels(t);
+      if (!list.length || list.length !== t.split(/[,\s]+/).filter(Boolean).length)
+        return ctx.reply("Format: <code>openai:gpt-5, anthropic:claude-opus-5-5</code>", { parse_mode:"HTML" });
+      db.setSetting("fallback_models", list.map(c => c.provider+":"+c.model).join(", "));
+    }
+    ctx.session.step = "idle";
+    const chain = fallbackPreview("llm_provider");
+    return ctx.reply("✅ Saqlandi\n\n"+(chain.length ? chain.map((c, i) => (i+1)+". "+c.provider+":"+c.model).join("\n") : "Zaxira modellar o'chirilgan"));
   }
   if ((step === "admin_price_t" || step === "admin_price_m") && isAdmin(ctx.from.id)) {
     const pts = text.split(/\s+/).map(Number);

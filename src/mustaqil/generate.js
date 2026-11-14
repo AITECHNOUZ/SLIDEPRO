@@ -40,7 +40,7 @@ const { normalizeChartData } = require("./chart-data");
 const { normalizeFormulaSource } = require("./formula-data");
 const { formulaKey } = require("./media-validation");
 const { buildMediaSlots, groupMediaSlotsByChapter, mergeMediaSlotsIntoContent } = require("./media-slots");
-const { complete, completeValidated, llmForAttempt, attemptsFor } = require("../llm/client");
+const { complete, completeValidated, llmForAttempt, attemptsFor, reportFailure, reportSuccess, effectiveLlm } = require("../llm/client");
 const { cleanMediaText } = require("./media-captions");
 const {
   validateBibliography,
@@ -124,7 +124,15 @@ function mediaSlotPrompt(slot, { topic, language, sourceContent, chapter }) {
 // ── LLM chaqiruv (Claude → OpenAI failover, src/llm/client.js) ─────────
 // attempt: kaskad rejimida 1–2 urinish arzon model, 3+ qimmat (asosiy) model
 async function callLLM({ system, user, llm, maxTokens = 6000, attempt = 1 }) {
-  const { text } = await complete({ system, user, llm: llmForAttempt(llm, attempt), maxTokens });
+  const step = llmForAttempt(llm, attempt);
+  // Qayta urinish — oldingi javob yaroqsiz bo'lgan (format buzilgan); bu ham model xatosi sifatida hisoblanadi,
+  // ketma-ket 3 ta bo'lsa ish zaxira modelga o'tadi
+  const st = require("../llm/client").fallbackState();
+  if (attempt > 1) {
+    if (st && st.pendingApiFailure) st.pendingApiFailure = false; // API xatosi complete() ichida sanalgan
+    else reportFailure(effectiveLlm(llmForAttempt(llm, attempt - 1)), "javob formati yaroqsiz");
+  } else reportSuccess();
+  const { text } = await complete({ system, user, llm: step, maxTokens });
   return text;
 }
 
@@ -1210,19 +1218,21 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
   // Outline zanjiri: to'liq reja → qayta urinish → yengil reja (faqat sarlavhalar) → mavzu asosidagi skelet.
   // Har qanday holatda ham hujjat davom etadi; normalizeOutlineForPages yetishmagan qismlarni to'ldiradi.
   let outline = null;
-  const outlineAttempts = attemptsFor(llm, 2);
-  for (let attempt = 1; attempt <= outlineAttempts && !outline; attempt++) {
-    try {
-      outline = parseOutline(await callLLM({
-        system: outlineSystemPrompt(),
-        user:   outlineUserPrompt({ topic, pages, language:lang, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount: requestedFlowchartCount, chartCount: requestedChartCount, formulaCount: requestedFormulaCount }),
-        llm, maxTokens: 6000, attempt, // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
-      }));
-      if (!Array.isArray(outline?.chapters) || !outline.chapters.length) throw new Error("outline'da bob yo'q");
-    } catch (error) {
-      outline = null;
-      console.warn(`[mustaqil] outline urinish ${attempt}/${outlineAttempts} xato: ${error.message}`);
-    }
+  // To'liq reja: asosiy model 3 marta (kaskadda arzon → qimmat), so'ng zaxira modellar (completeValidated)
+  try {
+    outline = await callLLMParsed({
+      system: outlineSystemPrompt(),
+      user:   outlineUserPrompt({ topic, pages, language:lang, studentName, studentGroup, org, supervisor, sourceContent, flowchartCount: requestedFlowchartCount, chartCount: requestedChartCount, formulaCount: requestedFormulaCount }),
+      llm, maxTokens: 6000, attempts: 2, // S2-T4: outline keng budget (JSON uzilishi oldini oladi)
+      parse: text => {
+        const parsed = parseOutline(text);
+        if (!Array.isArray(parsed?.chapters) || !parsed.chapters.length) throw new Error("outline'da bob yo'q");
+        return parsed;
+      },
+    });
+  } catch (error) {
+    outline = null;
+    console.warn(`[mustaqil] to'liq outline olinmadi: ${String(error.message).slice(0, 200)}`);
   }
   if (!outline) {
     try {
