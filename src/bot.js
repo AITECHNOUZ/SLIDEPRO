@@ -32,9 +32,19 @@ const needsStudentDetails = (id) => requiresStudentDetails({ isAdmin: isAdmin(id
 const supportLine = () => fulfill.supportLine();
 
 // ── UMUMIY FILTRLAR: blok, texnik ishlar, faollik ─────────
+const recentHits = new Map(); // spam himoyasi: foydalanuvchi bo'yicha so'nggi 10 soniyadagi so'rovlar
 bot.use(async (ctx, next) => {
   const id = ctx.from && ctx.from.id;
-  if (!id || (ctx.chat && ctx.chat.type !== "private")) return next();
+  // Bot faqat shaxsiy chatda ishlaydi (guruhga qo'shilsa jim turadi)
+  if (ctx.chat && ctx.chat.type !== "private") return;
+  if (!id) return next();
+  if (!isAdmin(id)) {
+    const now = Date.now();
+    const hits = (recentHits.get(id) || []).filter(t => now - t < 10_000);
+    hits.push(now); recentHits.set(id, hits);
+    if (hits.length > 25) return; // 10 soniyada 25 tadan ortiq — e'tiborsiz
+    if (recentHits.size > 5000) for (const [k, v] of recentHits) if (!v.length || now - v[v.length - 1] > 10_000) recentHits.delete(k);
+  }
   try {
     ctx.isNewUser = db.upsertUser(id, ctx.from.username, ctx.from.first_name);
     if (ctx.isNewUser && db.getSetting("notify_new_users", "0") === "1") {
@@ -245,7 +255,7 @@ function adminMain(id) {
     .text("💰 Narxlar","adm:price").text("💳 To'lov","adm:pay").row()
     .text("🤖 AI — Taqdimot","adm:provider").text("📝 AI — Mustaqil","adm:mustaqil_provider").row()
     .text("⚙️ Sozlamalar","adm:settings").text("🎁 VIP users","adm:free").row()
-    .text("📥 CSV hisobot","adm:csv").row();
+    .text("📥 CSV hisobot","adm:csv").text("💾 Baza nusxasi","adm:backup").row();
   if (isSuperAdmin(id)) kb.text("👥 Adminlar","adm:admins").row();
   return kb;
 }
@@ -468,7 +478,10 @@ bot.callbackQuery("adm:back", async (ctx) => {
 bot.callbackQuery("adm:stats", async (ctx) => {
   if (!isAdmin(ctx.from.id)) return ctx.answerCallbackQuery();
   await ctx.answerCallbackQuery();
-  await ctx.editMessageText(biz.statsReport(), { parse_mode:"HTML", reply_markup: new InlineKeyboard()
+  const q = fulfill.queueStatus();
+  const queue = "\n\n⚙️ Navbat: 🎨 "+q.taqdimot.active+"/"+q.taqdimot.max+(q.taqdimot.waiting ? " (+"+q.taqdimot.waiting+" kutmoqda)" : "")+
+    " · 📝 "+q.mustaqil.active+"/"+q.mustaqil.max+(q.mustaqil.waiting ? " (+"+q.mustaqil.waiting+" kutmoqda)" : "");
+  await ctx.editMessageText(biz.statsReport() + queue, { parse_mode:"HTML", reply_markup: new InlineKeyboard()
     .text("🔄 Yangilash","adm:stats").text("⬅️ Orqaga","adm:back") }).catch(() => {});
 });
 bot.callbackQuery("adm:csv", async (ctx) => {
@@ -486,6 +499,17 @@ bot.callbackQuery(/^adm:csv:(\d+)$/, async (ctx) => {
   const csv = biz.ordersCsv(since);
   await ctx.replyWithDocument(new InputFile(Buffer.from(csv, "utf8"), "buyurtmalar_" + (days || "hammasi") + "_" + new Date().toISOString().slice(0, 10) + ".csv"),
     { caption: "📥 Buyurtmalar hisoboti (" + (days ? days + " kun" : "hammasi") + ")" });
+});
+
+bot.callbackQuery("adm:backup", async (ctx) => {
+  if (!isSuperAdmin(ctx.from.id)) return ctx.answerCallbackQuery({ text: "Faqat bosh admin", show_alert: true });
+  await ctx.answerCallbackQuery("Tayyorlanmoqda...");
+  const file = path.join(require("os").tmpdir(), "slidepro_backup_" + new Date().toISOString().slice(0, 10) + ".sqlite");
+  try {
+    await db.db.backup(file);
+    await ctx.replyWithDocument(new InputFile(file), { caption: "💾 Baza nusxasi (foydalanuvchilar, buyurtmalar, sozlamalar). Maxfiy saqlang!" });
+  } catch (e) { await ctx.reply("⚠️ Nusxa olinmadi: " + esc(e.message)); }
+  finally { fs.unlink(file, () => {}); }
 });
 
 // --- Buyurtma kartasi ---
@@ -873,13 +897,14 @@ bot.on("message:text", async (ctx) => {
 
   if (step === "await_topic") {
     if (text.length < 3) return ctx.reply("Mavzu juda qisqa. To'liqroq yozing.");
-    ctx.session.draft.topic = text;
+    if (text.length > 250) return ctx.reply("Mavzu juda uzun (maks. 250 belgi). Qisqaroq yozing — batafsil ma'lumotni keyingi bosqichda «Kontent» sifatida yuborishingiz mumkin.");
+    ctx.session.draft.topic = text.replace(/\s+/g, " ");
     if (wt === "mustaqil") {
       ctx.session.step = "await_pages";
       return ctx.reply("📄 Necha sahifalik mustaqil ish kerak?", { reply_markup: pagesInline() });
     } else {
       ctx.session.step = "await_slides";
-      return ctx.reply("📄 Necha sahifalik taqdimot kerak?", { reply_markup: slidesInline() });
+      return ctx.reply("🎞 Taqdimot necha slayddan iborat bo'lsin?", { reply_markup: slidesInline() });
     }
   }
 
@@ -899,12 +924,13 @@ bot.on("message:text", async (ctx) => {
       return ctx.reply("Iltimos "+config.minSlides+"–"+config.maxSlides+" oralig'ida son kiriting.");
     ctx.session.draft.slides = n;
     ctx.session.step = "await_lang";
-    await ctx.reply("✅ Sahifa soni: "+n);
+    await ctx.reply("✅ Slaydlar: "+n+" ta");
     return askLang(ctx);
   }
 
   if (step === "await_student_name") {
     if (!needsStudentDetails(ctx.from.id)) return continueWithoutStudentDetails(ctx);
+    if (text.length < 3 || text.length > 80) return ctx.reply("Iltimos, F.I.Sh. ni to'g'ri kiriting (3–80 belgi).");
     ctx.session.draft.studentName = text;
     ctx.session.step = "await_student_group";
     return ctx.reply("🎓 Guruhingizni kiriting:\n\n<i>Masalan: 21-MTI-1 yoki AT-22</i>", { parse_mode:"HTML" });
@@ -912,6 +938,7 @@ bot.on("message:text", async (ctx) => {
 
   if (step === "await_student_group") {
     if (!needsStudentDetails(ctx.from.id)) return continueWithoutStudentDetails(ctx);
+    if (text.length > 40) return ctx.reply("Guruh nomi juda uzun (maks. 40 belgi).");
     ctx.session.draft.studentGroup = text;
     await ctx.reply("✅ "+esc(ctx.session.draft.studentName)+" — "+esc(text));
     return afterStudentDetails(ctx);
@@ -928,7 +955,7 @@ bot.on("message:text", async (ctx) => {
     const cleaned = cleanText(text);
     if (cleaned.length < 20) return ctx.reply("Kontent juda qisqa. Ko'proq matn yuboring.");
     ctx.session.draft.has_content = true; ctx.session.draft.content_text = cleaned;
-    await ctx.reply("✅ Kontent qabul qilindi ("+cleaned.length+" belgi).");
+    await ctx.reply("✅ Kontent qabul qilindi ("+cleaned.length+" belgi)."+(text.length > cleaned.length + 200 ? "\n<i>Matn uzun — dastlabki 12 000 belgisi ishlatiladi.</i>" : ""), { parse_mode:"HTML" });
     return proceedToPayment(ctx);
   }
 
@@ -1036,6 +1063,14 @@ bot.on("message:text", async (ctx) => {
   }
 
   if (step === "idle") return ctx.reply("Menyudan tanlang 👇", { reply_markup: mainMenu(ctx.from.id) });
+  const hints = {
+    await_receipt: "📎 To'lov chekini <b>rasm</b> (skrinshot) yoki PDF ko'rinishida yuboring.",
+    await_payment_method: "💳 Yuqoridagi tugmalardan to'lov usulini tanlang.",
+    await_pages: "📄 Tugmalardan sahifalar sonini tanlang.", await_slides: "🎞 Tugmalardan slaydlar sonini tanlang.",
+    await_lang: "🌐 Tugmalardan tilni tanlang.", await_content_choice: "📎 Tugmalardan birini tanlang.",
+    await_toc: "📑 Tugmalardan birini tanlang.",
+  };
+  return ctx.reply((hints[step] || "Davom etish uchun tugmalardan foydalaning.")+"\n\nBekor qilish: /cancel", { parse_mode:"HTML" });
 });
 
 // ── FAYL ───────────────────────────────────────────────────
@@ -1057,12 +1092,12 @@ bot.on("message:document", async (ctx) => {
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir,{recursive:true});
     const tmp = path.join(tmpDir, ctx.from.id+"_"+Date.now()+ext);
     fs.writeFileSync(tmp, Buffer.from(await (await fetch(url)).arrayBuffer()));
-    const raw = await extractText(tmp, name);
-    fs.unlink(tmp, ()=>{});
+    let raw;
+    try { raw = await extractText(tmp, name); } finally { fs.unlink(tmp, ()=>{}); }
     const cleaned = cleanText(raw);
     if (cleaned.length < 20) return ctx.reply("Matn topilmadi. Boshqa fayl yuboring.");
     ctx.session.draft.has_content = true; ctx.session.draft.content_text = cleaned;
-    await ctx.reply("✅ "+cleaned.length+" belgi matn olindi.");
+    await ctx.reply("✅ "+cleaned.length+" belgi matn olindi."+(raw.length > cleaned.length + 200 ? "\n<i>Fayl uzun — dastlabki 12 000 belgisi ishlatiladi.</i>" : ""), { parse_mode:"HTML" });
     return proceedToPayment(ctx);
   } catch(e) { return ctx.reply("⚠️ "+esc(e.message||"Xato")); }
 });
@@ -1128,8 +1163,9 @@ async function proceedToPayment(ctx) {
   }
 
   // Chegirma/balans narxni to'liq qoplasa — to'lovsiz bajariladi
-  if (!isFree(ctx.from.id) && amount === 0 && (d.promoCode || d.balanceUse || d.refDiscount)) {
-    const orderId = db.createOrder(orderFields(ctx, d, { amount: 0, status: "paid", payment_method: d.balanceUse ? "balance" : "promo" }));
+  if (!isFree(ctx.from.id) && amount === 0) {
+    const method = d.balanceUse ? "balance" : (d.promoCode || d.refDiscount) ? "promo" : "free";
+    const orderId = db.createOrder(orderFields(ctx, d, { amount: 0, status: "paid", payment_method: method }));
     if (!attachPromo(orderId, ctx.from.id, d)) {
       biz.cancelOrder(orderId); db.updateOrder(orderId, { status: "cancelled" });
       d.promoCode = null;
@@ -1190,6 +1226,9 @@ bot.callbackQuery(/^pay:(manual|click|payme)$/, async (ctx) => {
   if (ctx.session.step !== "await_payment_method") return ctx.answerCallbackQuery();
   await ctx.answerCallbackQuery();
   const method = ctx.match[1], d = ctx.session.draft;
+  const enabled = { manual: db.getSetting("manual_enabled")==="1", click: db.getSetting("click_enabled")==="1" && !!config.click.serviceId,
+    payme: db.getSetting("payme_enabled")==="1" && !!config.payme.merchantId }[method];
+  if (!enabled) return ctx.reply("⚠️ Bu to'lov usuli hozir o'chirilgan. Boshqa usulni tanlang.");
   if (!d.topic) { ctx.session.step = "idle"; return ctx.reply("Buyurtma ma'lumotlari topilmadi. Qaytadan boshlang.", { reply_markup: mainMenu(ctx.from.id) }); }
   ctx.session.step = "creating_order"; // ikki marta bosilsa ikkita buyurtma yaratilmasin
   const orderId = db.createOrder(orderFields(ctx, d, { amount: d.amount, status: "awaiting_payment", payment_method: method }));
@@ -1371,7 +1410,11 @@ async function main() {
   ]);
   console.log("Bot ishga tushdi.");
   console.log("Super adminlar:", config.adminIds.join(", "));
-  bot.start();
+  bot.start({ drop_pending_updates: false, allowed_updates: ["message", "callback_query"] });
+  // Railway/Docker qayta ishga tushirganda polling to'g'ri to'xtasin (aks holda 409 Conflict)
+  for (const sig of ["SIGTERM", "SIGINT"]) process.once(sig, () => { console.log("[bot] to'xtatilmoqda:", sig); bot.stop().finally(() => process.exit(0)); });
+  setInterval(() => { const n = fulfill.cleanupOutputs(); if (n) console.log("[cleanup] "+n+" ta eski fayl o'chirildi"); }, 6 * 3600_000);
+  setTimeout(() => fulfill.cleanupOutputs(), 60_000);
   // Oldingi ishga tushirishda yarim qolgan buyurtmalar (server restart) qayta tayyorlanadi
   setInterval(() => runReminders().catch(e => console.error("[reminders]", e.message)), 5 * 60_000);
   setTimeout(() => fulfill.resumeStuckOrders(db.listOrdersByStatuses).then(count => {

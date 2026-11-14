@@ -36,6 +36,26 @@ function releaseMustaqilSlot() {
   if (next) next();
 }
 
+// Taqdimotlar ham cheksiz parallel ishlamasin: ko'p buyurtma bir vaqtda kelsa server xotirasi va API limiti to'lib qoladi
+const MAX_PARALLEL_TAQDIMOT = Math.max(1, Number(process.env.MAX_PARALLEL_TAQDIMOT) || 3);
+let activeTaqdimot = 0;
+const waitingTaqdimot = [];
+async function acquireTaqdimotSlot(onQueued) {
+  if (activeTaqdimot < MAX_PARALLEL_TAQDIMOT) { activeTaqdimot++; return; }
+  try { await onQueued?.(waitingTaqdimot.length + 1); } catch (_) {}
+  await new Promise(resolve => waitingTaqdimot.push(resolve));
+  activeTaqdimot++;
+}
+function releaseTaqdimotSlot() {
+  activeTaqdimot = Math.max(0, activeTaqdimot - 1);
+  const next = waitingTaqdimot.shift();
+  if (next) next();
+}
+function queueStatus() {
+  return { mustaqil: { active: activeMustaqil, waiting: waitingMustaqil.length, max: MAX_PARALLEL_MUSTAQIL },
+    taqdimot: { active: activeTaqdimot, waiting: waitingTaqdimot.length, max: MAX_PARALLEL_TAQDIMOT } };
+}
+
 function slug(s) {
   return (s || "taqdimot").toLowerCase().replace(/[^a-z0-9\u0400-\u04FF]+/gi, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "taqdimot";
 }
@@ -142,11 +162,17 @@ async function fulfillOrder(orderId) {
       }
       res.slideCount = order.pages || 15;
     } else {
+      await acquireTaqdimotSlot(position => _bot.api.sendMessage(order.user_tg_id,
+        `🕒 Taqdimotingiz navbatda (${position}-o'rin). Bir necha daqiqada avtomatik boshlanadi.`));
+      try {
       res = await withRetries(() => generatePresentation({ topic: order.topic, slides: order.slides,
         sourceContent: order.content_text || "", language: order.language || "o'zbek",
         studentName: order.student_name || "", studentGroup: order.student_group || "",
         university: order.university || "", faculty: order.faculty || "", department: order.department || "",
         supervisor: order.supervisor || "", llm: llmCfg, outFile }), { orderId });
+      } finally {
+        releaseTaqdimotSlot();
+      }
     }
     return res;
     });
@@ -179,12 +205,25 @@ async function fulfillOrder(orderId) {
     }
 
     // 4) FOYDALANUVCHIGA YUBORISH
-    let userSent;
-    if (fileId) {
-      userSent = await _bot.api.sendDocument(order.user_tg_id, fileId, { caption: `${caption}\n\nBuyurtmangiz uchun rahmat!` });
-    } else {
-      userSent = await _bot.api.sendDocument(order.user_tg_id, new InputFile(outFile), { caption: `${caption}\n\nBuyurtmangiz uchun rahmat!` });
-      fileId = userSent.document && userSent.document.file_id;
+    // Fayl tayyor — foydalanuvchiga yuborishdagi xato (botni bloklagan, tarmoq) generatsiya xatosi emas:
+    // buyurtma "done" bo'lib qoladi va fayl keyin «Mening buyurtmalarim» yoki admin orqali qayta yuboriladi.
+    let userSent = null, deliveryError = null;
+    for (let attempt = 0; attempt < 3 && !userSent; attempt++) {
+      try {
+        userSent = fileId
+          ? await _bot.api.sendDocument(order.user_tg_id, fileId, { caption: `${caption}\n\nBuyurtmangiz uchun rahmat!` })
+          : await _bot.api.sendDocument(order.user_tg_id, new InputFile(outFile), { caption: `${caption}\n\nBuyurtmangiz uchun rahmat!` });
+      } catch (e) {
+        deliveryError = e;
+        if (e.error_code === 403) break; // foydalanuvchi botni bloklagan
+        await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
+      }
+    }
+    if (userSent && !fileId) fileId = userSent.document && userSent.document.file_id;
+    if (!userSent) {
+      console.error(`[fulfill] #${orderId} foydalanuvchiga yuborilmadi:`, deliveryError && deliveryError.message);
+      notifyAdmins(`📭 #${orderId} tayyor, lekin foydalanuvchiga yuborilmadi: ${String(deliveryError && deliveryError.message).slice(0, 200)}`,
+        { inline_keyboard: [[{ text: "📋 Buyurtma", callback_data: "admo:show:" + orderId }]] });
     }
     if (isMustaqil && progress) await progress.complete();
 
@@ -232,7 +271,8 @@ async function withRetries(fn, { orderId, onRetry } = {}) {
 // Bot qayta ishga tushganda "generating" holatida qolib ketgan buyurtmalarni davom ettirish
 async function resumeStuckOrders(listOrdersByStatuses) {
   try {
-    const stuck = (listOrdersByStatuses(["generating"], 50) || []).filter(order => order && order.status === "generating");
+    // "paid" — tasdiqlangan, lekin generatsiya boshlanmay qolgan (server shu orada o'chgan)
+    const stuck = (listOrdersByStatuses(["generating", "paid"], 50) || []).filter(order => order && ["generating", "paid"].includes(order.status));
     for (const order of stuck) {
       updateOrder(order.id, { status: "paid" });
       console.log(`[fulfill] #${order.id} qayta ishga tushirishdan keyin davom ettirilmoqda`);
@@ -257,4 +297,19 @@ function notifyAdmins(text, replyMarkup) {
   for (const id of ids) { _bot.api.sendMessage(id, text, replyMarkup ? { reply_markup: replyMarkup } : undefined).catch(() => {}); }
 }
 
-module.exports = { init, fulfillOrder, notifyAdmins, supportLine, cacheKey, withRetries, resumeStuckOrders };
+// Eski chiqish fayllarini tozalash (fayl Telegram'da file_id orqali saqlanadi, diskda keragi yo'q)
+function cleanupOutputs(maxAgeDays = Number(process.env.OUTPUT_KEEP_DAYS) || 3) {
+  let removed = 0;
+  for (const dir of [path.join(__dirname, "..", "..", "output"), path.join(__dirname, "..", "..", "tmp")]) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (_) { continue; }
+    const cutoff = Date.now() - maxAgeDays * 86400000;
+    for (const name of names) {
+      const file = path.join(dir, name);
+      try { const st = fs.statSync(file); if (st.isFile() && st.mtimeMs < cutoff) { fs.unlinkSync(file); removed++; } } catch (_) {}
+    }
+  }
+  return removed;
+}
+
+module.exports = { init, fulfillOrder, notifyAdmins, supportLine, cleanupOutputs, queueStatus, cacheKey, withRetries, resumeStuckOrders };
