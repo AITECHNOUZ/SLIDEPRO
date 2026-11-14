@@ -3,6 +3,10 @@
 // lenient=true (oxirgi urinish) — kichik kamchiliklar tuzatiladi, faqat jiddiy bo'shliq rad etiladi.
 
 const { ICON_NAMES } = require("./icons");
+const { normalizeFlowchartData } = require("../mustaqil/flowchart-data");
+
+// Slaydlarda ishlatiladigan GOST sxema turlari
+const SLIDE_DIAGRAM_TYPES = ["process_sequence", "cycle_diagram", "classification_tree", "ishikawa_diagram", "timeline_diagram", "functional_block_diagram", "algorithm_flowchart"];
 
 const ICONS = new Set(ICON_NAMES);
 // Namuna matn qolib ketganini aniqlash: <...>, "karta 1", "element 2", "tavsif" va h.k.
@@ -133,6 +137,66 @@ const VALIDATORS = {
     if (wordCount(summary) < (o.lenient ? 10 : 30) && points.length < 3) throw new SlideError("xulosa juda qisqa");
     return { summary, points };
   },
+  timeline: (d, o) => ({
+    intro: optionalText(d.intro, 25),
+    items: list(d.items, "items", { min: 3, max: 6, ...o }).map((item, index) => ({
+      date: requireText(item?.date, `items[${index + 1}].date`, { maxWords: 3, ...o }),
+      title: requireText(item?.title, `items[${index + 1}].title`, { maxWords: 6, ...o }),
+      desc: requireText(item?.desc, `items[${index + 1}].desc`, { min: o.lenient ? 1 : 3, maxWords: 14, ...o }),
+    })),
+  }),
+  process: (d, o) => ({
+    intro: optionalText(d.intro, 25),
+    items: cards(d.items, "items", { min: 3, max: 5, descWords: 20, ...o }),
+  }),
+  table: (d, o) => {
+    const headers = list(d.headers, "headers", { min: 2, max: 5, ...o }).map((h, index) => requireText(h, `headers[${index + 1}]`, { maxWords: 5, ...o }));
+    const rows = list(d.rows, "rows", { min: 2, max: 6, ...o }).map((row, ri) => {
+      if (!Array.isArray(row)) throw new SlideError(`rows[${ri + 1}] massiv emas`);
+      const cells = headers.map((_, ci) => optionalText(row[ci], 12));
+      if (cells.filter(Boolean).length < Math.min(2, headers.length)) throw new SlideError(`rows[${ri + 1}] deyarli bo'sh`);
+      return cells;
+    });
+    return { intro: optionalText(d.intro, 25), headers, rows };
+  },
+  section: (d, o) => ({ subtitle: optionalText(d.subtitle, 24) }),
+  quote: (d, o) => ({
+    quote: requireText(d.quote, "quote", { min: 6, maxWords: 50, ...o }),
+    author: requireText(d.author, "author", { maxWords: 8, ...o }),
+    source: optionalText(d.source, 12),
+    points: (Array.isArray(d.points) ? d.points : []).map((p, index) => ({ icon: icon(p?.icon, "check"), text: optionalText(typeof p === "string" ? p : p?.text, 16) })).filter(p => p.text).slice(0, 3),
+  }),
+  bignumber: (d, o) => ({
+    hero: {
+      value: requireText(d.hero?.value, "hero.value", { maxWords: 2, ...o }),
+      unit: optionalText(d.hero?.unit, 3),
+      label: requireText(d.hero?.label, "hero.label", { maxWords: 8, ...o }),
+      desc: optionalText(d.hero?.desc, 35),
+    },
+    items: list(d.items, "items", { min: 2, max: 3, ...o }).map((item, index) => ({
+      value: requireText(item?.value, `items[${index + 1}].value`, { maxWords: 3, ...o }),
+      label: requireText(item?.label, `items[${index + 1}].label`, { maxWords: 12, ...o }),
+    })),
+  }),
+  swot: (d, o) => {
+    const group = (value, field) => list(value, field, { min: 2, max: 3, ...o }).map((item, index) => requireText(typeof item === "string" ? item : item?.text, `${field}[${index + 1}]`, { maxWords: 12, ...o }));
+    return { strengths: group(d.strengths, "strengths"), weaknesses: group(d.weaknesses, "weaknesses"), opportunities: group(d.opportunities, "opportunities"), threats: group(d.threats, "threats") };
+  },
+  diagram: (d, o) => {
+    const raw = d.diagram || {};
+    const type = SLIDE_DIAGRAM_TYPES.includes(raw.diagram_type) ? raw.diagram_type : null;
+    if (!type) throw new SlideError(`diagram.diagram_type quyidagilardan biri bo'lsin: ${SLIDE_DIAGRAM_TYPES.join(", ")}`);
+    let normalized;
+    try {
+      normalized = normalizeFlowchartData({ title: raw.title || "Sxema", ...raw, diagram_type: type }, { diagramType: type });
+    } catch (error) {
+      throw new SlideError(`diagram: ${error.message}`);
+    }
+    return {
+      diagram: { ...normalized, diagram_type: type },
+      points: (Array.isArray(d.points) ? d.points : []).map(p => ({ text: optionalText(typeof p === "string" ? p : p?.text, 18) })).filter(p => p.text).slice(0, 3),
+    };
+  },
   bullets: (d, o) => ({
     intro: optionalText(d.intro, 45),
     items: list(d.items, "items", { min: 3, max: 5, ...o }).map((item, index) => ({ text: requireText(typeof item === "string" ? item : item?.text, `items[${index + 1}]`, { maxWords: 18, ...o }) })),
@@ -151,4 +215,4 @@ function validateSlide(raw, { layout, title, lenient = false } = {}) {
   return { layout: kind, title: slideTitle, icon: icon(raw.icon, "star"), ...body };
 }
 
-module.exports = { validateSlide, SlideError, PLACEHOLDER_RE, clip, wordCount, VALIDATORS };
+module.exports = { validateSlide, SlideError, PLACEHOLDER_RE, clip, wordCount, VALIDATORS, SLIDE_DIAGRAM_TYPES };

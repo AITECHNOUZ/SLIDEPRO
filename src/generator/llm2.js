@@ -12,7 +12,7 @@ const {
   slideSystemPrompt, slideUserPrompt, parseSlide, CONTENT_LAYOUTS,
 } = require("./prompt2");
 
-const ROTATION = ["feature-grid", "steps", "stat-callout", "dual-column", "objectives", "metrics", "layers", "split-list", "chart"];
+const ROTATION = ["feature-grid", "process", "stat-callout", "table", "dual-column", "steps", "bignumber", "objectives", "metrics", "layers", "split-list", "chart"];
 const SLIDE_CONCURRENCY = 4;
 
 async function mapLimited(items, limit, worker) {
@@ -42,9 +42,13 @@ function normalizeOutlineSlides(rawSlides, contentSlides, topic, language) {
   slides.push(conclusion || { title: L.conclusion, layout: "conclusion", brief: `${topic} bo'yicha umumiy xulosa va asosiy natijalar.` });
   // Layout tekshiruvi va ketma-ket takrorni almashtirish
   const used = new Map();
+  let sections = 0;
   slides.forEach((slide, index) => {
     if (slide.layout === "conclusion" && index === slides.length - 1) return;
     let layout = CONTENT_LAYOUTS.includes(slide.layout) && slide.layout !== "conclusion" ? slide.layout : null;
+    // Bo'lim ajratuvchi faqat uzun taqdimotda, ko'pi bilan 2 ta va birinchi slayd emas
+    if (layout === "section" && (contentSlides < 12 || sections >= 2 || index === 0)) layout = null;
+    if (layout === "section") sections++;
     const previous = index > 0 ? slides[index - 1].layout : null;
     if (!layout || layout === previous) {
       layout = ROTATION.filter(name => name !== previous).sort((a, b) => (used.get(a) || 0) - (used.get(b) || 0))[0];

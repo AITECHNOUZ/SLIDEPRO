@@ -63,6 +63,21 @@ function card(slide, pres, x, y, w, h, fill, lift) {
         });
       }
       break;
+    case "ink":
+      slide.addShape(pres.shapes.RECTANGLE, { x, y, w, h, fill: { color: plain ? t.surface : color }, line: { color: plain ? t.line : color, width: 1 } });
+      if (plain) slide.addShape(pres.shapes.RECTANGLE, { x, y, w, h: 0.06, fill: { color: t.ink } });
+      break;
+    case "soft":
+      slide.addShape(shape, { ...base, fill: { color: plain ? t.surface : color }, shadow: plain ? softShadow() : undefined });
+      if (plain) slide.addShape(pres.shapes.OVAL, { x: x + w - 0.55, y: y - 0.12, w: 0.4, h: 0.4, fill: { color: t.secondary, transparency: 70 } });
+      break;
+    case "glass":
+      slide.addShape(shape, { ...base, fill: { color: plain ? "FFFFFF" : color, transparency: plain ? 90 : 10 }, line: { color: "FFFFFF", width: 0.75, transparency: plain ? 70 : 85 } });
+      break;
+    case "double":
+      slide.addShape(pres.shapes.RECTANGLE, { x, y, w, h, fill: { color: plain ? t.surface : color }, line: { color: plain ? t.line : color, width: 1.25 } });
+      if (plain) slide.addShape(pres.shapes.RECTANGLE, { x: x + 0.06, y: y + 0.06, w: w - 0.12, h: h - 0.12, fill: { type: "none" }, line: { color: t.line, width: 0.5 } });
+      break;
     default:
       slide.addShape(shape, { ...base, shadow: lift ? liftShadow() : softShadow() });
   }
@@ -156,6 +171,45 @@ function header(pres, slide, ctx, num, title, iconName) {
       if (iconName) chip(slide, pres, ctx, W - MX - 0.7, 0.48, 0.7, iconName, t.surface, t.primary, false);
       return;
     }
+    case "editorial": {
+      txt(slide, n, { x: MX - 0.05, y: 0.18, w: 1.6, h: 1.3, fontFace: F.head, fontSize: 64, bold: true, color: t.secondary, valign: "middle" });
+      slide.addShape(pres.shapes.LINE, { x: MX + 1.55, y: 0.45, w: 0, h: 0.95, line: { color: t.ink, width: 1 } });
+      txtFit(slide, title, { x: MX + 1.75, y: 0.42, w: W - MX * 2 - 1.8, h: 0.95, fontFace: F.head, fontSize: 27, italic: true, color: t.ink, valign: "middle" });
+      slide.addShape(pres.shapes.LINE, { x: MX, y: 1.45, w: W - MX * 2, h: 0, line: { color: t.ink, width: 2 } });
+      slide.addShape(pres.shapes.LINE, { x: MX, y: 1.52, w: W - MX * 2, h: 0, line: { color: t.ink, width: 0.5 } });
+      return;
+    }
+    case "leaf": {
+      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: MX, y: 0.5, w: 0.9, h: 0.8, rectRadius: 0.4, fill: { color: t.primary } });
+      txt(slide, n, { x: MX, y: 0.5, w: 0.9, h: 0.8, fontFace: F.head, fontSize: 20, bold: true, color: t.card, align: "center", valign: "middle" });
+      txtFit(slide, title, { x: MX + 1.15, y: 0.48, w: W - MX * 2 - 2.1, h: 0.85, fontFace: F.head, fontSize: 26, bold: true, color: t.dark, valign: "middle" });
+      if (iconName) chip(slide, pres, ctx, W - MX - 0.8, 0.5, 0.8, iconName, t.tint, t.primary, true);
+      return;
+    }
+    case "glass": {
+      txt(slide, n, { x: MX, y: 0.5, w: 1.0, h: 0.85, fontFace: F.head, fontSize: 30, bold: true, color: t.secondary, valign: "middle" });
+      txtFit(slide, title, { x: MX + 1.0, y: 0.5, w: W - MX * 2 - 2.0, h: 0.85, fontFace: F.head, fontSize: 26, bold: true, color: t.ink, valign: "middle" });
+      slide.addShape(pres.shapes.RECTANGLE, { x: MX + 1.0, y: 1.36, w: 1.6, h: 0.05, fill: { color: t.accent } });
+      if (iconName) chip(slide, pres, ctx, W - MX - 0.8, 0.52, 0.8, iconName, t.primary, "FFFFFF", true);
+      return;
+    }
+    case "pill": {
+      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: MX, y: 0.62, w: 1.25, h: 0.5, rectRadius: 0.25, fill: { color: t.tint }, line: { color: t.primary, width: 1 } });
+      txt(slide, n, { x: MX, y: 0.62, w: 1.25, h: 0.5, fontFace: F.head, fontSize: 15, bold: true, color: t.primary, align: "center", valign: "middle" });
+      txtFit(slide, title, { x: MX + 1.45, y: 0.45, w: W - MX * 2 - 2.4, h: 0.85, fontFace: F.head, fontSize: 26, bold: true, color: t.dark, valign: "middle" });
+      slide.addShape(pres.shapes.LINE, { x: MX, y: 1.4, w: W - MX * 2, h: 0, line: { color: t.line, width: 1.25 } });
+      if (iconName) chip(slide, pres, ctx, W - MX - 0.75, 0.52, 0.75, iconName, t.primary, "FFFFFF", true);
+      return;
+    }
+    case "ornament": {
+      txtFit(slide, title, { x: MX + 1.0, y: 0.38, w: W - MX * 2 - 2.0, h: 0.8, fontFace: F.head, fontSize: 27, bold: true, color: t.primary, align: "center", valign: "middle" });
+      const cy = 1.32;
+      slide.addShape(pres.shapes.LINE, { x: MX + 1.6, y: cy, w: (W - MX * 2 - 3.6) / 2, h: 0, line: { color: t.accent, width: 1 } });
+      slide.addShape(pres.shapes.LINE, { x: W / 2 + 0.4, y: cy, w: (W - MX * 2 - 3.6) / 2, h: 0, line: { color: t.accent, width: 1 } });
+      slide.addShape(pres.shapes.DIAMOND, { x: W / 2 - 0.16, y: cy - 0.16, w: 0.32, h: 0.32, fill: { color: t.accent } });
+      txt(slide, n, { x: MX, y: 0.5, w: 0.9, h: 0.6, fontFace: F.head, fontSize: 16, italic: true, color: t.secondary, valign: "middle" });
+      return;
+    }
     default: {
       txt(slide, n, { x: MX, y: 0.45, w: 1.1, h: 0.95, fontFace: F.head, fontSize: 44, bold: true, color: t.secondary, align: "left", valign: "middle", transparency: 62 });
       txtFit(slide, title, { x: MX + 0.95, y: 0.5, w: W - MX * 2 - 1.7, h: 0.85, fontFace: F.head, fontSize: 25, bold: true, color: t.ink, align: "left", valign: "middle" });
@@ -178,6 +232,23 @@ function lightBg(slide, t) {
   } else if (TH.bg === "blobs") {
     slide.addShape(pres.shapes.OVAL, { x: -1.6, y: 5.2, w: 3.6, h: 3.6, fill: { color: t.tint } });
     slide.addShape(pres.shapes.OVAL, { x: W - 1.3, y: 5.9, w: 2.4, h: 2.4, fill: { color: t.accent, transparency: 80 } });
+  } else if (TH.bg === "paper") {
+    slide.addShape(pres.shapes.RECTANGLE, { x: 0, y: H - 0.16, w: W, h: 0.16, fill: { color: t.ink } });
+  } else if (TH.bg === "leaves") {
+    slide.addShape(pres.shapes.OVAL, { x: W - 2.2, y: -1.4, w: 3.6, h: 2.6, fill: { color: t.secondary, transparency: 78 }, rotate: -25 });
+    slide.addShape(pres.shapes.OVAL, { x: -1.5, y: H - 1.3, w: 3.4, h: 2.2, fill: { color: t.primary, transparency: 85 }, rotate: 20 });
+    slide.addShape(pres.shapes.OVAL, { x: W - 1.1, y: H - 1.0, w: 1.6, h: 1.1, fill: { color: t.accent, transparency: 75 }, rotate: -35 });
+  } else if (TH.bg === "aurora") {
+    slide.addShape(pres.shapes.OVAL, { x: -2.5, y: -2.8, w: 7.5, h: 6.5, fill: { color: t.primary, transparency: 72 } });
+    slide.addShape(pres.shapes.OVAL, { x: W - 4.5, y: 3.6, w: 7.0, h: 6.0, fill: { color: t.secondary, transparency: 78 } });
+    slide.addShape(pres.shapes.OVAL, { x: W - 6.5, y: -3.2, w: 5.0, h: 4.5, fill: { color: t.accent, transparency: 84 } });
+  } else if (TH.bg === "clean") {
+    slide.addShape(pres.shapes.RECTANGLE, { x: 0, y: 0, w: W, h: 0.1, fill: { color: t.primary } });
+    slide.addShape(pres.shapes.RECTANGLE, { x: 0, y: 0.1, w: W * 0.35, h: 0.05, fill: { color: t.accent } });
+  } else if (TH.bg === "parchment") {
+    slide.addShape(pres.shapes.RECTANGLE, { x: 0.18, y: 0.18, w: W - 0.36, h: H - 0.36, fill: { type: "none" }, line: { color: t.secondary, width: 2 } });
+    slide.addShape(pres.shapes.RECTANGLE, { x: 0.28, y: 0.28, w: W - 0.56, h: H - 0.56, fill: { type: "none" }, line: { color: t.secondary, width: 0.6 } });
+    [[0.12, 0.12], [W - 0.42, 0.12], [0.12, H - 0.42], [W - 0.42, H - 0.42]].forEach(([x, y]) => slide.addShape(pres.shapes.DIAMOND, { x, y, w: 0.3, h: 0.3, fill: { color: t.accent } }));
   } else if (TH.bg === "blueprint") {
     gridLines(slide, pres, 0.5, t.tint, 0);
     slide.addShape(pres.shapes.RECTANGLE, { x: 0.22, y: 0.22, w: W - 0.44, h: H - 0.44, fill: { type: "none" }, line: { color: t.primary, width: 1.25 } });
@@ -289,6 +360,81 @@ function title(pres, slide, d, ctx) {
         txt(slide, m.label || "", { x: bx + 0.08, y, w: 1.6, h: 0.38, fontFace: F.body, fontSize: 12.5, color: t.mute, valign: "middle" });
         txt(slide, m.value || "", { x: bx + 1.8, y, w: 3.5, h: 0.38, fontFace: F.body, fontSize: 13.5, bold: true, color: t.primary, valign: "middle" });
       });
+      return;
+    }
+    case "editorial": {
+      slide.background = { color: t.light };
+      slide.addShape(pres.shapes.RECTANGLE, { x: 0, y: 0, w: W, h: 0.55, fill: { color: t.ink } });
+      if (d.org) txt(slide, d.org, { x: MX, y: 0.05, w: 9, h: 0.45, fontFace: F.body, fontSize: 12, bold: true, color: t.light, charSpacing: 3, valign: "middle" });
+      if (d.date) txt(slide, d.date, { x: W - MX - 2, y: 0.05, w: 2, h: 0.45, fontFace: F.body, fontSize: 12, bold: true, color: t.light, align: "right", valign: "middle" });
+      txt(slide, (d.kicker || "TAQDIMOT"), { x: MX, y: 1.15, w: 6, h: 0.4, fontFace: F.body, fontSize: 13, bold: true, color: t.secondary, charSpacing: 5 });
+      txt(slide, titleLines(d), { x: MX - 0.05, y: 1.6, w: 9.4, h: 3.4, fontFace: F.head, fontSize: 50, bold: true, color: t.ink, valign: "top", fit: "shrink", lineSpacingMultiple: 0.92 });
+      slide.addShape(pres.shapes.LINE, { x: 10.3, y: 1.2, w: 0, h: 4.6, line: { color: t.ink, width: 1 } });
+      if (d.faculty) txt(slide, d.faculty, { x: 10.5, y: 1.15, w: 2.2, h: 4.6, fontFace: F.head, fontSize: 14, italic: true, color: t.mute, valign: "top" });
+      slide.addShape(pres.shapes.LINE, { x: MX, y: metaY - 0.25, w: W - MX * 2, h: 0, line: { color: t.ink, width: 2 } });
+      titleMeta(slide, d, t, { x: MX, y: metaY, color: t.mute, valueColor: t.ink });
+      return;
+    }
+    case "nature": {
+      slide.background = { color: t.light };
+      slide.addShape(pres.shapes.OVAL, { x: 7.6, y: -1.8, w: 7.4, h: 6.0, fill: { color: t.primary }, rotate: -18 });
+      slide.addShape(pres.shapes.OVAL, { x: 10.2, y: 3.8, w: 4.4, h: 3.2, fill: { color: t.secondary, transparency: 20 }, rotate: 25 });
+      slide.addShape(pres.shapes.OVAL, { x: 8.0, y: 4.9, w: 2.2, h: 1.5, fill: { color: t.accent, transparency: 10 }, rotate: -30 });
+      if (d.org) txt(slide, d.org, { x: MX, y: 0.6, w: 7.2, h: 0.45, fontFace: F.body, fontSize: 13.5, bold: true, color: t.primary });
+      if (d.faculty) txt(slide, d.faculty, { x: MX, y: 1.02, w: 7.2, h: 0.38, fontFace: F.body, fontSize: 12, color: t.mute });
+      pill(slide, pres, MX, 2.0, 2.4, 0.46, t.secondary, (d.kicker || "TAQDIMOT"), t.card);
+      txt(slide, titleLines(d), { x: MX, y: 2.65, w: 7.0, h: 2.5, fontFace: F.head, fontSize: 38, bold: true, color: t.dark, valign: "top", fit: "shrink" });
+      titleMeta(slide, d, t, { x: MX, y: metaY, color: t.mute, valueColor: t.ink });
+      if (d.date) txt(slide, d.date, { x: 9.6, y: 1.2, w: 3.0, h: 0.6, fontFace: F.head, fontSize: 24, bold: true, color: t.card, align: "center" });
+      return;
+    }
+    case "aurora": {
+      slide.background = { color: t.dark };
+      slide.addShape(pres.shapes.OVAL, { x: -2.0, y: -3.0, w: 8.5, h: 7.5, fill: { color: t.primary, transparency: 55 } });
+      slide.addShape(pres.shapes.OVAL, { x: 7.5, y: 2.5, w: 8.0, h: 7.0, fill: { color: t.secondary, transparency: 62 } });
+      slide.addShape(pres.shapes.OVAL, { x: 5.0, y: -3.5, w: 5.5, h: 5.0, fill: { color: t.accent, transparency: 70 } });
+      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: MX, y: 1.7, w: W - MX * 2, h: 3.4, rectRadius: 0.25, fill: { color: "FFFFFF", transparency: 88 }, line: { color: "FFFFFF", width: 0.75, transparency: 60 } });
+      if (d.org) txt(slide, d.org, { x: MX, y: 0.55, w: 10.5, h: 0.4, fontFace: F.body, fontSize: 13, bold: true, color: t.ink, charSpacing: 2.5 });
+      if (d.faculty) txt(slide, d.faculty, { x: MX, y: 0.95, w: 10.5, h: 0.35, fontFace: F.body, fontSize: 12, color: t.mute });
+      txt(slide, (d.kicker || "TAQDIMOT"), { x: MX + 0.5, y: 2.0, w: 6, h: 0.4, fontFace: F.body, fontSize: 13, bold: true, color: t.accent, charSpacing: 4 });
+      txt(slide, titleLines(d), { x: MX + 0.5, y: 2.45, w: W - MX * 2 - 1.0, h: 2.4, fontFace: F.head, fontSize: 40, bold: true, color: t.ink, valign: "top", fit: "shrink" });
+      titleMeta(slide, d, t, { x: MX, y: metaY, color: t.mute, valueColor: t.ink });
+      if (d.date) txt(slide, d.date, { x: W - MX - 3, y: 6.65, w: 3, h: 0.4, fontFace: F.body, fontSize: 13, bold: true, color: t.ink, align: "right" });
+      return;
+    }
+    case "medical": {
+      slide.background = { color: t.light };
+      slide.addShape(pres.shapes.RECTANGLE, { x: 0, y: 0, w: W, h: 0.12, fill: { color: t.primary } });
+      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 8.4, y: 1.3, w: 4.3, h: 4.3, rectRadius: 0.6, fill: { color: t.tint } });
+      // tibbiy "plus" belgisi
+      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 10.15, y: 2.2, w: 0.8, h: 2.5, rectRadius: 0.12, fill: { color: t.primary } });
+      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, { x: 9.3, y: 3.05, w: 2.5, h: 0.8, rectRadius: 0.12, fill: { color: t.primary } });
+      slide.addShape(pres.shapes.OVAL, { x: 11.9, y: 1.0, w: 0.7, h: 0.7, fill: { color: t.accent } });
+      if (d.org) txt(slide, d.org, { x: MX, y: 0.55, w: 7.5, h: 0.42, fontFace: F.body, fontSize: 13.5, bold: true, color: t.primary });
+      if (d.faculty) txt(slide, d.faculty, { x: MX, y: 0.95, w: 7.5, h: 0.36, fontFace: F.body, fontSize: 12, color: t.mute });
+      pill(slide, pres, MX, 2.0, 2.4, 0.44, t.primary, (d.kicker || "TAQDIMOT"), t.card);
+      txt(slide, titleLines(d), { x: MX, y: 2.6, w: 7.4, h: 2.5, fontFace: F.head, fontSize: 38, bold: true, color: t.dark, valign: "top", fit: "shrink" });
+      titleMeta(slide, d, t, { x: MX, y: metaY, color: t.mute, valueColor: t.ink });
+      if (d.date) txt(slide, d.date, { x: 8.4, y: 5.8, w: 4.3, h: 0.45, fontFace: F.body, fontSize: 14, bold: true, color: t.primary, align: "center" });
+      return;
+    }
+    case "heritage": {
+      slide.background = { color: t.light };
+      lightBg(slide, t);
+      if (d.org) txt(slide, d.org, { x: 1.0, y: 0.7, w: W - 2.0, h: 0.42, fontFace: F.head, fontSize: 15, bold: true, color: t.primary, align: "center", charSpacing: 2 });
+      if (d.faculty) txt(slide, d.faculty, { x: 1.0, y: 1.1, w: W - 2.0, h: 0.36, fontFace: F.body, fontSize: 12.5, italic: true, color: t.mute, align: "center" });
+      const cy = 1.95;
+      slide.addShape(pres.shapes.LINE, { x: 3.2, y: cy, w: 2.8, h: 0, line: { color: t.accent, width: 1 } });
+      slide.addShape(pres.shapes.LINE, { x: W - 6.0, y: cy, w: 2.8, h: 0, line: { color: t.accent, width: 1 } });
+      slide.addShape(pres.shapes.DIAMOND, { x: W / 2 - 0.2, y: cy - 0.2, w: 0.4, h: 0.4, fill: { color: t.accent } });
+      txt(slide, (d.kicker || "TAQDIMOT"), { x: 1.0, y: 2.25, w: W - 2.0, h: 0.4, fontFace: F.head, fontSize: 13, bold: true, color: t.secondary, align: "center", charSpacing: 6 });
+      txt(slide, titleLines(d), { x: 1.4, y: 2.7, w: W - 2.8, h: 2.1, fontFace: F.head, fontSize: 40, bold: true, color: t.dark, align: "center", valign: "middle", fit: "shrink" });
+      slide.addShape(pres.shapes.LINE, { x: 4.2, y: 5.0, w: W - 8.4, h: 0, line: { color: t.accent, width: 1 } });
+      (d.meta || []).forEach((m, i) => txt(slide, [
+        { text: (m.label || "") + "  ", options: { color: t.mute, italic: true } },
+        { text: m.value || "", options: { color: t.ink, bold: true } },
+      ], { x: 1.0, y: 5.2 + i * 0.4, w: W - 2.0, h: 0.38, fontFace: F.body, fontSize: 14, align: "center" }));
+      if (d.date) txt(slide, d.date, { x: 1.0, y: 6.55, w: W - 2.0, h: 0.4, fontFace: F.head, fontSize: 14, italic: true, color: t.primary, align: "center" });
       return;
     }
     default: {
@@ -849,6 +995,213 @@ function bullets(pres, slide, d, ctx) {
   });
 }
 
+// =====================================================================
+// TIMELINE — vaqt chizig'i (sana + voqea), kartochkalar navbat bilan yuqori/past
+// =====================================================================
+function timeline(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "calendar");
+  const items = (d.items || []).slice(0, 6);
+  const top = d.intro ? 2.35 : 1.8;
+  if (d.intro) txt(slide, d.intro, { x: MX, y: 1.65, w: W - MX * 2, h: 0.6, fontFace: F.body, fontSize: 15, color: t.mute, valign: "top" });
+  const axisY = top + (6.95 - top) / 2;
+  const n = Math.max(1, items.length);
+  const step = (W - MX * 2) / n;
+  slide.addShape(pres.shapes.LINE, { x: MX, y: axisY, w: W - MX * 2, h: 0, line: { color: t.primary, width: 3, endArrowType: "triangle" } });
+  const cardH = Math.min(1.95, axisY - top - 0.45);
+  items.forEach((it, i) => {
+    const cx = MX + step * (i + 0.5);
+    const up = i % 2 === 0;
+    const cw = Math.min(step * 1.7, 3.6);
+    const x = Math.min(Math.max(MX, cx - cw / 2), W - MX - cw);
+    const y = up ? axisY - 0.45 - cardH : axisY + 0.45;
+    slide.addShape(pres.shapes.LINE, { x: cx, y: up ? y + cardH : axisY, w: 0, h: 0.45, line: { color: t.secondary, width: 1.5 } });
+    slide.addShape(pres.shapes.OVAL, { x: cx - 0.17, y: axisY - 0.17, w: 0.34, h: 0.34, fill: { color: i % 2 ? t.secondary : t.accent }, line: { color: t.light, width: 2 } });
+    card(slide, pres, x, y, cw, cardH, t.card);
+    txt(slide, it.date || "", { x: x + 0.2, y: y + 0.12, w: cw - 0.4, h: 0.42, fontFace: F.head, fontSize: 18, bold: true, color: t.primary });
+    txtFit(slide, it.title || "", { x: x + 0.2, y: y + 0.52, w: cw - 0.4, h: 0.45, fontFace: F.body, fontSize: 14, bold: true, color: t.ink });
+    txtFit(slide, it.desc || "", { x: x + 0.2, y: y + 0.95, w: cw - 0.4, h: cardH - 1.05, fontFace: F.body, fontSize: 12.5, color: t.mute, valign: "top" });
+  });
+}
+
+// =====================================================================
+// PROCESS — chevron strelkalar bilan jarayon zanjiri
+// =====================================================================
+function processFlow(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "cogs");
+  const items = (d.items || []).slice(0, 5);
+  let y0 = 1.8;
+  if (d.intro) { txt(slide, d.intro, { x: MX, y: 1.65, w: W - MX * 2, h: 0.7, fontFace: F.body, fontSize: 15, color: t.mute, valign: "top" }); y0 = 2.45; }
+  const n = Math.max(1, items.length);
+  const gap = -0.12;
+  const cw = (W - MX * 2 - gap * (n - 1)) / n;
+  const cols = [t.primary, t.secondary, t.accent, t.dark, t.good];
+  items.forEach((it, i) => {
+    const x = MX + i * (cw + gap);
+    const col = cols[i % cols.length];
+    slide.addShape(i === 0 ? pres.shapes.PENTAGON : pres.shapes.CHEVRON, { x, y: y0, w: cw, h: 1.15, fill: { color: col } });
+    txt(slide, String(i + 1).padStart(2, "0"), { x: x + (i === 0 ? 0.25 : 0.62), y: y0, w: 0.9, h: 1.15, fontFace: F.head, fontSize: 26, bold: true, color: t.card, valign: "middle" });
+    chip(slide, pres, ctx, x + cw - 1.05, y0 + 0.27, 0.6, it.icon || "check", t.card, col, true);
+    const by = y0 + 1.4;
+    card(slide, pres, x + 0.1, by, cw - 0.2 + gap, 6.95 - by, t.card);
+    slide.addShape(pres.shapes.RECTANGLE, { x: x + 0.1, y: by, w: cw - 0.2 + gap, h: 0.07, fill: { color: col } });
+    txtFit(slide, it.title || "", { x: x + 0.3, y: by + 0.2, w: cw - 0.6 + gap, h: 0.75, fontFace: F.head, fontSize: 16, bold: true, color: t.ink, valign: "top" });
+    txtFit(slide, it.desc || "", { x: x + 0.3, y: by + 0.95, w: cw - 0.6 + gap, h: 6.95 - by - 1.1, fontFace: F.body, fontSize: 13.5, color: t.mute, valign: "top", lineSpacingMultiple: 1.08 });
+  });
+}
+
+// =====================================================================
+// TABLE — taqqoslash jadvali (PowerPoint'da tahrirlanadigan)
+// =====================================================================
+function tableSlide(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "layers");
+  const headers = (d.headers || []).slice(0, 5);
+  const rows = (d.rows || []).slice(0, 6).map(r => headers.map((_, i) => String((r || [])[i] ?? "")));
+  let y = 1.8;
+  if (d.intro) { txt(slide, d.intro, { x: MX, y: 1.65, w: W - MX * 2, h: 0.6, fontFace: F.body, fontSize: 15, color: t.mute, valign: "top" }); y = 2.35; }
+  const fontSize = rows.length > 4 || headers.length > 4 ? 13 : 14.5;
+  const head = headers.map(h => ({ text: h, options: { bold: true, color: t.card, fill: { color: t.primary }, fontFace: F.head, fontSize: fontSize + 0.5, valign: "middle" } }));
+  const body = rows.map((r, ri) => r.map((cell, ci) => ({ text: cell, options: {
+    color: ci === 0 ? t.ink : t.ink, bold: ci === 0, fontFace: F.body, fontSize, valign: "middle",
+    fill: { color: ri % 2 ? (t.tint) : (t.surface || "FFFFFF") },
+  } })));
+  const firstW = headers.length > 2 ? 3.0 : (W - MX * 2) / 2;
+  const restW = (W - MX * 2 - firstW) / Math.max(1, headers.length - 1);
+  slide.addTable([head, ...body], {
+    x: MX, y, w: W - MX * 2, colW: headers.map((_, i) => (i === 0 ? firstW : restW)),
+    border: { type: "solid", pt: 0.75, color: t.line }, margin: 0.08, rowH: Math.min(0.85, (6.95 - y) / (rows.length + 1)), autoPage: false,
+  });
+}
+
+// =====================================================================
+// SECTION — bo'lim ajratuvchi (katta raqam + sarlavha)
+// =====================================================================
+function section(pres, slide, d, ctx) {
+  const { t } = ctx;
+  slide.background = { color: t.primary };
+  slide.addShape(pres.shapes.OVAL, { x: W - 5.2, y: -1.6, w: 6.5, h: 6.5, fill: { color: t.secondary, transparency: 55 } });
+  slide.addShape(pres.shapes.OVAL, { x: W - 2.6, y: 4.6, w: 3.6, h: 3.6, fill: { color: t.accent, transparency: 45 } });
+  txt(slide, String(d.number || "").padStart(2, "0"), { x: MX, y: 1.2, w: 4, h: 2.0, fontFace: F.head, fontSize: 110, bold: true, color: t.card, transparency: 35 });
+  slide.addShape(pres.shapes.RECTANGLE, { x: MX, y: 3.45, w: 1.2, h: 0.09, fill: { color: t.accent } });
+  txtFit(slide, d.title || "", { x: MX, y: 3.7, w: 9.5, h: 1.5, fontFace: F.head, fontSize: 40, bold: true, color: t.card, valign: "top" });
+  if (d.subtitle) txtFit(slide, d.subtitle, { x: MX, y: 5.25, w: 9.0, h: 1.2, fontFace: F.body, fontSize: 18, color: t.onDark, valign: "top" });
+}
+
+// =====================================================================
+// QUOTE — iqtibos (olim, hujjat, qonun) + 2-3 asosiy xulosa
+// =====================================================================
+function quote(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "book");
+  const pts = (d.points || []).slice(0, 3);
+  const qw = pts.length ? 7.6 : W - MX * 2;
+  card(slide, pres, MX, 1.8, qw, 5.1, t.tint);
+  txt(slide, "“", { x: MX + 0.25, y: 1.55, w: 1.5, h: 1.6, fontFace: "Georgia", fontSize: 120, bold: true, color: t.accent });
+  txtFit(slide, d.quote || "", { x: MX + 0.6, y: 2.75, w: qw - 1.2, h: 2.85, fontFace: F.head, fontSize: 22, italic: true, color: t.ink, valign: "top", lineSpacingMultiple: 1.15 });
+  slide.addShape(pres.shapes.RECTANGLE, { x: MX + 0.6, y: 5.85, w: 0.6, h: 0.06, fill: { color: t.accent } });
+  txt(slide, [
+    { text: d.author || "", options: { bold: true, color: t.primary, breakLine: !!d.source } },
+    ...(d.source ? [{ text: d.source, options: { color: t.mute, italic: true } }] : []),
+  ], { x: MX + 1.35, y: 5.65, w: qw - 1.9, h: 0.95, fontFace: F.body, fontSize: 14, valign: "middle" });
+  const px = MX + qw + 0.3, pw = W - MX - px;
+  const ph = (5.1 - 0.2 * (pts.length - 1)) / Math.max(1, pts.length);
+  pts.forEach((p, i) => {
+    const y = 1.8 + i * (ph + 0.2);
+    card(slide, pres, px, y, pw, ph, t.card);
+    chip(slide, pres, ctx, px + 0.25, y + 0.25, 0.55, p.icon || "check", t.tint, t.secondary, true);
+    txtFit(slide, p.text || "", { x: px + 0.95, y: y + 0.15, w: pw - 1.15, h: ph - 0.3, fontFace: F.body, fontSize: 14, color: t.ink, valign: "middle" });
+  });
+}
+
+// =====================================================================
+// BIGNUMBER — bitta katta raqam (asosiy ko'rsatkich) + yordamchi raqamlar
+// =====================================================================
+function bignumber(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "chart");
+  const hero = d.hero || {};
+  card(slide, pres, MX, 1.8, 6.6, 5.1, t.primary, true);
+  txt(slide, [
+    { text: hero.value || "", options: { fontSize: 96, bold: true, color: t.card } },
+    { text: hero.unit ? " " + hero.unit : "", options: { fontSize: 36, bold: true, color: t.accent } },
+  ], { x: MX + 0.4, y: 2.05, w: 6.0, h: 1.9, fontFace: F.head, valign: "middle", fit: "shrink" });
+  txtFit(slide, hero.label || "", { x: MX + 0.45, y: 4.0, w: 5.8, h: 0.6, fontFace: F.head, fontSize: 20, bold: true, color: t.card });
+  txtFit(slide, hero.desc || "", { x: MX + 0.45, y: 4.65, w: 5.8, h: 2.0, fontFace: F.body, fontSize: 15, color: t.onDark, valign: "top", lineSpacingMultiple: 1.12 });
+  const items = (d.items || []).slice(0, 3);
+  const px = MX + 6.9, pw = W - MX - px;
+  const ih = (5.1 - 0.2 * (items.length - 1)) / Math.max(1, items.length);
+  items.forEach((it, i) => {
+    const y = 1.8 + i * (ih + 0.2);
+    card(slide, pres, px, y, pw, ih, t.card);
+    txt(slide, it.value || "", { x: px + 0.3, y, w: 2.0, h: ih, fontFace: F.head, fontSize: 30, bold: true, color: [t.secondary, t.accent, t.good][i % 3], valign: "middle", fit: "shrink" });
+    txtFit(slide, it.label || "", { x: px + 2.35, y: y + 0.1, w: pw - 2.6, h: ih - 0.2, fontFace: F.body, fontSize: 14, color: t.ink, valign: "middle" });
+  });
+}
+
+// =====================================================================
+// SWOT — 2x2 rangli kvadrantlar
+// =====================================================================
+const SWOT_LABELS = {
+  uz: ["Kuchli tomonlar", "Zaif tomonlar", "Imkoniyatlar", "Tahdidlar"],
+  ru: ["Сильные стороны", "Слабые стороны", "Возможности", "Угрозы"],
+  en: ["Strengths", "Weaknesses", "Opportunities", "Threats"],
+};
+function swot(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "target");
+  const names = SWOT_LABELS[ctx.lang || "uz"] || SWOT_LABELS.uz;
+  const groups = [d.strengths, d.weaknesses, d.opportunities, d.threats];
+  const colors = [t.good, t.bad, t.secondary, t.accent];
+  const letters = ["S", "W", "O", "T"];
+  const gw = (W - MX * 2 - 0.25) / 2, gh = (5.15 - 0.25) / 2;
+  groups.forEach((list, i) => {
+    const x = MX + (i % 2) * (gw + 0.25), y = 1.75 + Math.floor(i / 2) * (gh + 0.25);
+    card(slide, pres, x, y, gw, gh, t.card);
+    slide.addShape(pres.shapes.RECTANGLE, { x, y, w: 1.05, h: gh, fill: { color: colors[i] } });
+    txt(slide, letters[i], { x, y: y + 0.1, w: 1.05, h: 1.0, fontFace: F.head, fontSize: 44, bold: true, color: t.card, align: "center", valign: "middle" });
+    txt(slide, names[i], { x: x + 1.3, y: y + 0.12, w: gw - 1.5, h: 0.45, fontFace: F.head, fontSize: 17, bold: true, color: colors[i] });
+    const lines = (list || []).slice(0, 3).map((item, k, all) => ({ text: item, options: { bullet: { code: "25AA" }, breakLine: k < all.length - 1 } }));
+    txtFit(slide, lines, { x: x + 1.3, y: y + 0.6, w: gw - 1.5, h: gh - 0.75, fontFace: F.body, fontSize: 14, color: t.ink, valign: "top", paraSpaceAfter: 4 });
+  });
+}
+
+// =====================================================================
+// DIAGRAM — GOST uslubidagi sxema (mustaqil ish dvigatelidan) + 2-3 izoh
+// =====================================================================
+function diagram(pres, slide, d, ctx) {
+  const { t } = ctx;
+  lightBg(slide, t);
+  header(pres, slide, ctx, d.number, d.title, d.icon || "layers");
+  const pts = (d.points || []).slice(0, 3);
+  const areaW = pts.length ? 8.4 : W - MX * 2;
+  card(slide, pres, MX, 1.75, areaW, 5.2, "FFFFFF" === t.surface ? t.card : t.card);
+  // Sxema oq fonda chiziladi — to'q mavzuda ham oq "varaq" ustida
+  slide.addShape(pres.shapes.RECTANGLE, { x: MX + 0.12, y: 1.87, w: areaW - 0.24, h: 4.96, fill: { color: "FFFFFF" } });
+  if (d._image) {
+    const maxW = areaW - 0.5, maxH = 4.7;
+    const ratio = d._image.width / d._image.height;
+    let w = maxW, h = w / ratio;
+    if (h > maxH) { h = maxH; w = h * ratio; }
+    slide.addImage({ path: d._image.path, x: MX + (areaW - w) / 2, y: 1.87 + (4.96 - h) / 2, w, h });
+  }
+  const px = MX + areaW + 0.3, pw = W - MX - px;
+  const ph = (5.2 - 0.2 * (pts.length - 1)) / Math.max(1, pts.length);
+  pts.forEach((p, i) => {
+    const y = 1.75 + i * (ph + 0.2);
+    card(slide, pres, px, y, pw, ph, t.card);
+    txt(slide, String(i + 1), { x: px + 0.2, y: y + 0.18, w: 0.5, h: 0.5, fontFace: F.head, fontSize: 22, bold: true, color: t.accent });
+    txtFit(slide, p.text || "", { x: px + 0.7, y: y + 0.15, w: pw - 0.9, h: ph - 0.3, fontFace: F.body, fontSize: 13.5, color: t.ink, valign: "middle" });
+  });
+}
+
 // ---------- registr ----------
 const LAYOUTS = {
   title,
@@ -865,6 +1218,14 @@ const LAYOUTS = {
   conclusion,
   references,
   bullets,
+  timeline,
+  process: processFlow,
+  table: tableSlide,
+  section,
+  quote,
+  bignumber,
+  swot,
+  diagram,
 };
 const LAYOUT_NAMES = Object.keys(LAYOUTS);
 

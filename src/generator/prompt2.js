@@ -10,7 +10,18 @@ const { labels } = require("./i18n");
 const CONTENT_LAYOUTS = [
   "stat-callout", "objectives", "steps", "feature-grid",
   "layers", "split-list", "dual-column", "metrics", "chart",
+  "timeline", "process", "table", "section", "quote", "bignumber", "swot", "diagram",
 ];
+
+// Slayddagi GOST sxemasi uchun turlar, tugun turlari va cheklovlar (mustaqil ish shablonlaridan)
+function diagramGuide() {
+  const { getFlowchartTemplate } = require("../mustaqil/flowchart-templates");
+  const { SLIDE_DIAGRAM_TYPES } = require("./slide-validate");
+  return SLIDE_DIAGRAM_TYPES.map(id => {
+    const tpl = getFlowchartTemplate(id);
+    return `  • ${id}: kind = ${tpl.allowedKinds.join("|")}; ${tpl.limitsText || "2–5 tugun, 1–7 qirra, barcha tugunlar bog'langan"}${tpl.example ? `; namuna: ${JSON.stringify({ nodes: tpl.example.nodes, edges: tpl.example.edges })}` : ""}`;
+  }).join("\n");
+}
 
 // ===================== 1-BOSQICH: OUTLINE =====================
 function outlineSystemPrompt() {
@@ -39,7 +50,18 @@ Mavjud layout turlari (har biri turli vizual struktura):
 - "dual-column": ikki ustun (afzallik/kamchilik, taqqoslash uchun)
 - "metrics": raqamli ko'rsatkichlar paneli (natijalar, statistika uchun)
 - "chart": diagramma + kartochkalar (ma'lumotlar dinamikasi uchun)
+- "timeline": vaqt chizig'i — sanalar bilan 3-6 voqea (tarix, rivojlanish bosqichlari uchun)
+- "process": strelkali jarayon zanjiri 3-5 bosqich (texnologik jarayon, algoritm uchun)
+- "table": taqqoslash jadvali (usullar, turlar, parametrlarni solishtirish uchun)
+- "quote": muhim iqtibos (olim, qonun, hujjatdan) + 2-3 xulosa
+- "bignumber": bitta asosiy katta raqam + 2-3 yordamchi ko'rsatkich
+- "swot": SWOT tahlil (kuchli/zaif tomonlar, imkoniyat/tahdidlar)
+- "diagram": GOST uslubidagi sxema (tasnif daraxti, sikl, sabab-oqibat, blok-sxema, algoritm) + 2-3 izoh
+- "section": bo'lim ajratuvchi slayd (faqat 14+ slaydli taqdimotda, katta bo'lim boshida; ko'pi bilan 2 ta)
 - "conclusion": xulosa slaydi — FAQAT oxirgi slayd uchun
+
+Layoutlarni XILMA-XIL tanla: bir xil layout ketma-ket kelmasin va iloji boricha takrorlanmasin. Mavzuga mos vizual turlardan
+foydalan: tarixiy mavzuda timeline/quote, texnik mavzuda process/diagram/chart/table, iqtisodiy mavzuda chart/bignumber/swot/table.
 
 Quyidagi JSON qaytar:
 {
@@ -94,6 +116,14 @@ function layoutSchema(layout) {
     "dual-column": `{"layout":"dual-column","title":"<slayd sarlavhasi>","icon":"users","leftTitle":"<chap ustun sarlavhasi>","left":[{"icon":"check","title":"<element 1>","desc":"<tavsif>"},{"icon":"bolt","title":"<element 2>","desc":"<tavsif>"},{"icon":"star","title":"<element 3>","desc":"<tavsif>"}],"rightTitle":"<o'ng ustun sarlavhasi>","right":[{"title":"<element 1>","desc":"<tavsif>","color":"bad"},{"title":"<element 2>","desc":"<tavsif>","color":"accent"},{"title":"<element 3>","desc":"<tavsif>","color":"secondary"}],"strip":[{"value":"<son>","label":"<nomi>"},{"value":"<son>","label":"<nomi>"}]}`,
     "metrics": `{"layout":"metrics","title":"<slayd sarlavhasi>","icon":"gauge","intro":"<kirish 1 jumla>","stats":[{"value":"<son>","unit":"%","label":"<ko'rsatkich nomi>","sub":"<izoh>"},{"value":"<son>","unit":"x","label":"<ko'rsatkich nomi>","sub":"<izoh>"},{"value":"<son>","unit":"kun","label":"<ko'rsatkich nomi>","sub":"<izoh>"},{"value":"<son>","unit":"","label":"<ko'rsatkich nomi>","sub":"<izoh>"}],"stagesTitle":"<bosqichlar sarlavhasi>","stages":[{"title":"<1-bosqich>","desc":"<tavsif>"},{"title":"<2-bosqich>","desc":"<tavsif>"},{"title":"<3-bosqich>","desc":"<tavsif>"}]}`,
     "chart": `{"layout":"chart","title":"<slayd sarlavhasi>","icon":"chart","cards":[{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"},{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"},{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"},{"value":"<son>","unit":"<birlik>","label":"<ko'rsatkich nomi>"}],"chart":{"title":"<diagramma nomi>","type":"bar","seriesName":"<ko'rsatkich>","labels":["<kat1>","<kat2>","<kat3>","<kat4>","<kat5>"],"values":[42,68,55,80,95]},"panels":[{"label":"<panel sarlavhasi>","lines":["<qisqa xulosa 4-6 so'z>"]},{"label":"<panel sarlavhasi>","lines":["<qisqa xulosa 4-6 so'z>"]}]}`,
+    "timeline": `{"layout":"timeline","title":"<slayd sarlavhasi>","icon":"calendar","intro":"<1 jumla>","items":[{"date":"<yil yoki davr>","title":"<voqea nomi, 2-5 so'z>","desc":"<voqea mazmuni, 6-12 so'z>"},{"date":"...","title":"...","desc":"..."},{"date":"...","title":"...","desc":"..."},{"date":"...","title":"...","desc":"..."}]}`,
+    "process": `{"layout":"process","title":"<slayd sarlavhasi>","icon":"cogs","intro":"<1 jumla>","items":[{"icon":"search","title":"<1-bosqich, 2-4 so'z>","desc":"<bosqich mazmuni, 10-18 so'z>"},{"icon":"cogs","title":"<2-bosqich>","desc":"..."},{"icon":"bolt","title":"<3-bosqich>","desc":"..."},{"icon":"check","title":"<4-bosqich>","desc":"..."}]}`,
+    "table": `{"layout":"table","title":"<slayd sarlavhasi>","icon":"layers","intro":"<1 jumla>","headers":["<mezon>","<1-variant>","<2-variant>","<3-variant>"],"rows":[["<1-mezon>","<qiymat>","<qiymat>","<qiymat>"],["<2-mezon>","...","...","..."],["<3-mezon>","...","...","..."],["<4-mezon>","...","...","..."]]}`,
+    "section": `{"layout":"section","title":"<bo'lim nomi>","subtitle":"<bo'limda nima ko'rib chiqiladi, 10-20 so'z>"}`,
+    "quote": `{"layout":"quote","title":"<slayd sarlavhasi>","icon":"book","quote":"<HAQIQIY, mashhur iqtibos yoki qonun/hujjatdan aniq parcha, 10-40 so'z>","author":"<muallif yoki hujjat>","source":"<asar/hujjat nomi, yil>","points":[{"icon":"check","text":"<1-xulosa, 8-14 so'z>"},{"icon":"star","text":"<2-xulosa>"}]}`,
+    "bignumber": `{"layout":"bignumber","title":"<slayd sarlavhasi>","icon":"chart","hero":{"value":"<asosiy raqam, masalan 1,2 mlrd>","unit":"<birlik>","label":"<ko'rsatkich nomi>","desc":"<raqam nimani anglatadi, 15-30 so'z>"},"items":[{"value":"<raqam>","label":"<izoh, 4-10 so'z>"},{"value":"<raqam>","label":"<izoh>"},{"value":"<raqam>","label":"<izoh>"}]}`,
+    "swot": `{"layout":"swot","title":"<slayd sarlavhasi>","icon":"target","strengths":["<6-12 so'z>","<...>"],"weaknesses":["...","..."],"opportunities":["...","..."],"threats":["...","..."]}`,
+    "diagram": `{"layout":"diagram","title":"<slayd sarlavhasi>","icon":"layers","diagram":{"diagram_type":"<tur>","title":"<sxema nomi>","nodes":[{"id":"a","label":"<1-4 so'z>","kind":"<tugun turi>"}],"edges":[{"from":"a","to":"b","label":""}]},"points":[{"text":"<sxemaga izoh, 8-16 so'z>"},{"text":"..."}]}\nSxema turlari (diagram_type), tugun turlari va cheklovlar:\n${diagramGuide()}\nTimeline tugunlarida "date" maydoni bo'lsin. Yorliqlar qisqa (1-4 so'z).`,
     "bullets": `{"layout":"bullets","title":"<slayd sarlavhasi>","icon":"list","intro":"<asosiy fikr, 25-40 so'z>","items":[{"text":"<1-muhim fikr, 8-16 so'z>"},{"text":"<2-muhim fikr>"},{"text":"<3-muhim fikr>"},{"text":"<4-muhim fikr>"}]}`,
     "conclusion": `{"layout":"conclusion","title":"XULOSA","summary":"<mavzu bo'yicha 60-80 so'zlik umumiy xulosa — yaxlit paragraf matni, butun sahifani to'ldirsin>","points":[{"icon":"check","text":"<1-asosiy natija (qisqa jumla)>"},{"icon":"star","text":"<2-asosiy natija>"},{"icon":"rocket","text":"<3-asosiy natija>"},{"icon":"layers","text":"<4-asosiy natija>"}]}`,
   };

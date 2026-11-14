@@ -39,3 +39,27 @@ test("tuzilma: titul, reja, mazmun tartibi saqlanadi, xulosa va adabiyotlar oxir
   assert.equal(spec.slides.at(-1).title, "Список литературы");
   assert.equal(spec.slides.at(-2).title, "ЗАКЛЮЧЕНИЕ");
 });
+
+test("dizayn mavzusi taqdimot mavzusiga mos tanlanadi, 12 ta mavzu bor", () => {
+  const { THEMES, suitableThemes, pickDesign } = require("../src/generator/theme");
+  assert.equal(Object.keys(THEMES).length, 12);
+  assert.deepEqual(suitableThemes("Gaz pechini avtomatlashtirish"), ["engineering"]);
+  assert.ok(suitableThemes("Amir Temur davlatchiligi tarixi").includes("heritage"));
+  assert.ok(suitableThemes("Yurak kasalliklari profilaktikasi").includes("medical"));
+  assert.ok(suitableThemes("Quyosh energiyasi va ekologiya").includes("nature"));
+  assert.ok(suitableThemes("Sun`iy intellekt").includes("tech"), "turli apostroflar ham tanilsin");
+  const picked = pickDesign({ topic: "Gaz pechini avtomatlashtirish", random: () => 0.1 });
+  assert.equal(picked.themeKey, "engineering");
+  assert.ok(THEMES.engineering.palettes.includes(picked.paletteKey));
+});
+
+test("yangi slayd turlari tekshiruvi: jadval, vaqt chizig'i, SWOT, sxema", () => {
+  const table = validateSlide({ layout: "table", title: "Taqqoslash", headers: ["Mezon", "A", "B"], rows: [["Narx", "past", "yuqori"], ["Aniqlik", "±5", "±2"]] }, { layout: "table" });
+  assert.equal(table.rows[0].length, 3);
+  assert.throws(() => validateSlide({ layout: "table", title: "T", headers: ["Mezon", "A"], rows: [["", ""], ["x", ""]] }, { layout: "table" }), /bo'sh/);
+  assert.throws(() => validateSlide({ layout: "timeline", title: "T", items: [{ date: "", title: "a b", desc: "uch so'zli tavsif bor" }] }, { layout: "timeline" }), /kamida|bo'sh/);
+  const diagram = validateSlide({ layout: "diagram", title: "Sikl", diagram: { diagram_type: "cycle_diagram", nodes: ["A", "B", "C"].map((label, i) => ({ id: `s${i}`, label, kind: "stage" })), edges: [["s0", "s1"], ["s1", "s2"], ["s2", "s0"]].map(([from, to]) => ({ from, to })) } }, { layout: "diagram" });
+  assert.equal(diagram.diagram.diagram_type, "cycle_diagram");
+  assert.throws(() => validateSlide({ layout: "diagram", title: "X", diagram: { diagram_type: "pid_control_system", nodes: [], edges: [] } }, { layout: "diagram" }), /diagram_type/);
+  assert.throws(() => validateSlide({ layout: "swot", title: "S", strengths: ["a"], weaknesses: [], opportunities: [], threats: [] }, { layout: "swot" }), /kamida/);
+});

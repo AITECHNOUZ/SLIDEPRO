@@ -10,7 +10,28 @@ const { generateAll, iconPath } = require("./icons");
 const { render } = require("./layouts");
 const { ensureStructure } = require("./structure");
 const { generateSpecParallel } = require("./llm2");
-const { labels } = require("./i18n");
+const { labels, langKey } = require("./i18n");
+const os = require("os");
+const { renderGostSchematic } = require("../mustaqil/flowchart");
+
+// "diagram" slaydlaridagi GOST sxemalarini oldindan rasmga aylantirish; chizilmasa — oddiy ro'yxat slaydi
+async function prerenderDiagrams(spec) {
+  for (const slide of spec.slides || []) {
+    if (slide.layout !== "diagram") continue;
+    try {
+      const image = await renderGostSchematic({ ...slide.diagram, language: spec.language || "" });
+      const file = path.join(os.tmpdir(), `slidepro-diagram-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`);
+      fs.writeFileSync(file, image.buf);
+      slide._image = { path: file, width: image.width, height: image.height };
+    } catch (error) {
+      console.warn("[taqdimot] sxema chizilmadi, ro'yxatga almashtirildi:", error.message);
+      const labelsList = (slide.diagram?.nodes || []).map(node => node.label).filter(Boolean);
+      slide.layout = "bullets";
+      slide.intro = (slide.points || []).map(point => point.text).join(" ");
+      slide.items = labelsList.slice(0, 5).map(text => ({ text }));
+    }
+  }
+}
 const { verifyReferences, referenceVerificationEnabled } = require("../mustaqil/reference-verify");
 
 const ICONS_DIR = path.join(__dirname, "..", "..", "icons");
@@ -23,9 +44,10 @@ async function ensureIcons(t) {
   await generateAll(ICONS_DIR, paletteColors(t));
 }
 
-function makeCtx(t, theme, deckTitle) {
+function makeCtx(t, theme, deckTitle, lang) {
   return {
     t,
+    lang,
     theme,
     deckTitle,
     icon: (name, color) => {
@@ -40,7 +62,7 @@ function makeCtx(t, theme, deckTitle) {
 // spec -> .pptx faylga yozish
 async function buildPresentation(spec, outFile) {
   // Dizayn: spec.theme/spec.palette berilsa — o'sha, aks holda tasodifiy mavzu va palitra
-  const design = pickDesign({ theme: spec.theme, palette: spec.palette });
+  const design = pickDesign({ theme: spec.theme, palette: spec.palette, topic: spec.topic || spec.title || "" });
   spec.theme = design.themeKey;
   spec.palette = design.paletteKey;
   const t = design.palette;
@@ -52,7 +74,8 @@ async function buildPresentation(spec, outFile) {
   pres.title = (spec.slides && spec.slides[0] && spec.slides[0].title) || "Taqdimot";
 
   const deckTitle = (spec.slides && spec.slides[0] && spec.slides[0].title) || spec.title || "";
-  const ctx = makeCtx(t, design.theme, String(deckTitle).replace(/\s+/g, " "));
+  const ctx = makeCtx(t, design.theme, String(deckTitle).replace(/\s+/g, " "), langKey(spec.language));
+  await prerenderDiagrams(spec);
   spec.slides.forEach((sd, i) => {
     sd.number = i + 1;
     const slide = pres.addSlide();
@@ -60,6 +83,9 @@ async function buildPresentation(spec, outFile) {
   });
 
   await pres.writeFile({ fileName: outFile });
+  for (const slide of spec.slides || []) {
+    if (slide._image?.path) fs.promises.unlink(slide._image.path).catch(() => {});
+  }
   return outFile;
 }
 
@@ -82,6 +108,8 @@ async function generatePresentation({ topic, slides, sourceContent, palette, the
   ensureStructure(spec, topic, { language });
   // LLM tanlagan palitra emas — dizayn mavzusi tasodifiy (yoki admin/foydalanuvchi tanlovi)
   spec.theme = theme || undefined;
+  spec.language = language || "";
+  spec.topic = topic;
   spec.palette = palette || undefined;
 
   // Titul: universitet, fakultet/kafedra, talaba va tekshiruvchi — foydalanuvchi kiritganidan
