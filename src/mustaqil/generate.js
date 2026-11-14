@@ -47,6 +47,7 @@ const {
   completeBibliography,
   buildBibliographyRepairPrompt,
 } = require("./references");
+const { verifyReferences, referenceVerificationEnabled } = require("./reference-verify");
 
 const DEFAULT_LLM_CONCURRENCY = 3;
 const SLOT_RETRY_LIMIT = 2;
@@ -1190,7 +1191,18 @@ async function generateMustaqilIsh({ topic, pages, language, studentName, studen
     }
     bibliographyCheck = validateBibliography(outline.references);
   }
-  outline.references = completeBibliography(outline.references, { topic });
+  outline.references = completeBibliography(outline.references);
+  // Crossref orqali DOI tekshiruvi: noto'g'ri DOI olib tashlanadi, topilgan haqiqiy DOI qo'shiladi.
+  if (referenceVerificationEnabled()) {
+    await reportProgress(14, "Adabiyotlar tekshirilmoqda");
+    try {
+      const verified = await verifyReferences(outline.references);
+      outline.references = verified.references;
+      console.log(`[mustaqil] adabiyotlar Crossref'da: ${verified.stats.confirmed} tasdiqlandi, ${verified.stats.doiAdded} DOI qo'shildi, ${verified.stats.doiRemoved} noto'g'ri DOI olib tashlandi`);
+    } catch (error) {
+      console.warn("[mustaqil] adabiyotlarni tekshirish o'tkazib yuborildi:", error.message);
+    }
+  }
   bibliographyCheck = validateBibliography(outline.references);
   if (!bibliographyCheck.valid) {
     console.warn("[mustaqil] ogohlantirish: yakuniy bibliografiya baribir APA 7/uch til talablarining barchasini qanoatlantirmaydi; DOCX generatsiyasi to'xtatilmaydi:", bibliographyCheck.problems.join("; "));

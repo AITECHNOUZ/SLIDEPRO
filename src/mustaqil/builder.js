@@ -595,7 +595,7 @@ function buildReferences(refs = [], topic = "mavzu") {
       indent: undefined,
     }),
   ];
-  sortReferencesAPA(completeBibliography(refs, { topic })).forEach((ref, index) => {
+  sortReferencesAPA(completeBibliography(refs)).forEach((ref, index) => {
     const parts = parseApaPartsForDisplay(ref);
     const run = (text, italics = false) => new TextRun({ text: cleanInlineLatex(text), font: FONT, size: 24, italics, color: BLACK });
     const children = parts

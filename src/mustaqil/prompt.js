@@ -536,14 +536,13 @@ GRAFIKLAR (butun ish bo'yicha ${chartQuotaText} ta; har asosiy bo'limda 0–2 ta
 
 JADVALLAR: butun ish bo'yicha ko'pi bilan 1 ta, ixtiyoriy asosiy bo'lim uchun
 
-ADABIYOTLAR (references): AYNAN 12 ta yozuv, APA 7 formatida va to'liq bibliografik maydonlari bilan:
-- 12 ta yozuv ichida asl nashr tili o'zbek, rus va ingliz bo'lgan kamida bittadan manba bo'lsin. Tilni faqat manbaning ASL TILDAGI SARLAVHASI bo'yicha hisobla; tarjima asarlar, tarjima sarlavhalari, izohlar yoki "o'zbekcha/ruscha/inglizcha" yorliqlari til qamrovi hisoblanmaydi.
-- Sarlavha va nashr ma'lumotlarini asl yozuvi va asl tilida saqla; o'zbek manbasi o'zbekcha, rus manbasi ruscha, ingliz manbasi inglizcha bo'lsin. Tarjima qilingan nom bilan asl til manbasi sifatida ko'rsatma.
+ADABIYOTLAR (references): 12 tagacha (kamida 8 ta) FAQAT HAQIQIY manba, APA 7 formatida:
+- Har bir yozuv haqiqatan nashr etilgan, aniq bilganing asar bo'lsin: mavzu bo'yicha klassik darsliklar, ko'p iqtibos qilingan monografiyalar va maqolalar, standartlar. Mavjudligiga ishonching komil bo'lmagan asarni YOZMA; muallif, sarlavha, yil yoki nashriyotni to'qima. Haqiqiy manba yetmasa, kamroq yoz — soxta yozuv bilan to'ldirma.
+- Imkon qadar asl nashr tili o'zbek, rus va ingliz bo'lgan manbalar aralash bo'lsin. Sarlavha asl tilida yozilsin (tarjima sarlavha emas).
 - Kitob/hisobot: Muallif yoki tashkilot. (yil). Asar nomi. Nashriyot.
-- Jurnal maqolasi: Muallif, A. A. (yil). Maqola nomi. Jurnal nomi, jild(son), sahifalar yoki maqola raqami. DOI/URL.
-- Haqiqiy va mavzuga mos manbalarni topa olmasang, yetishmayotgan o'rinlarni mavzuga mos, mantiqan realistik APA yozuvlari bilan to'ldir. Bibliografiya yozuvlariga AI, sintetik, tekshirish yoki boshqa belgi, yorliq yoxud izoh qo'shma; soxta DOI/URL yoki tekshirilmagan jild, son, sahifa ham qo'shma.
-- Foydalanuvchi bergan tekshirilgan manbalarning metadata'sini o'zgartirma; ular 12 taga yoki uch til qamroviga yetmasa, qolgan o'rinlarni yuqoridagi standart APA yozuvlari bilan to'ldir.
-- Noaniq umumiy yozuvlarni haqiqiy manba sifatida ko'rsatma. Har bir yozuv APA 7 muallif, yil, sarlavha va nashriyot/jurnal maydonlari tartibida bo'lsin.
+- Jurnal maqolasi: Muallif, A. A. (yil). Maqola nomi. Jurnal nomi, jild(son), sahifalar. DOI faqat aniq bilsang (https://doi.org/10....); taxminiy yoki namunaviy DOI, URL, sahifa soni yozma.
+- Bibliografiya yozuvlariga AI, sintetik, tekshirish yoki boshqa belgi, yorliq yoxud izoh qo'shma.
+- Foydalanuvchi bergan manbalarning metadata'sini o'zgartirma va ularni birinchi o'ringa qo'y.
 
 Faqat JSON qaytar`;
 }

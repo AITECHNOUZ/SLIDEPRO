@@ -176,7 +176,11 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
       },
       { id: "conclusion", title: "Xulosa", content: [] },
     ],
-    references: ["Sinov manbasi"],
+    references: [
+      "Ogata, K. (2010). Modern control engineering (5th ed.). Prentice Hall.",
+      "Sinov manbasi",
+      "Esram, T., & Chapman, P. L. (2007). Comparison of photovoltaic array maximum power point tracking techniques. IEEE Transactions on Energy Conversion, 22(2), 439–449. https://doi.org/10.1109/TEC.2006.874230",
+    ],
   }, imageCache);
 
   assert.ok(Buffer.isBuffer(docx));
@@ -211,8 +215,9 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   const referenceStart = documentXml.lastIndexOf("Foydalanilgan adabiyotlar");
   const referencesXml = documentXml.slice(referenceStart);
   const referenceNumbers = [...referencesXml.matchAll(/<w:t(?:\s[^>]*)?>(\d+)\.\s/g)].map(match => Number(match[1]));
-  assert.deepEqual(referenceNumbers, Array.from({ length: 12 }, (_, index) => index + 1), "builder bevosita chaqirilganda ham 12 ta manbani 1–12 tartibida chiqaradi");
-  assert.equal((referencesXml.match(/https:\/\/doi\.org\/10\./g) || []).length, 12);
+  assert.deepEqual(referenceNumbers, [1, 2], "builder faqat to'liq APA yozuvlarni chiqaradi, soxta yozuv qo'shmaydi");
+  assert.doesNotMatch(referencesXml, /Sinov manbasi|10\.0000/);
+  assert.equal((referencesXml.match(/https:\/\/doi\.org\/10\./g) || []).length, 1, "faqat haqiqiy DOI saqlanadi");
 });
 
 test("DOCX’dagi GOST diagrammalari sahifa enining 76, balandligining 60 foizidan oshmaydi va nisbatini saqlaydi", async () => {
@@ -317,7 +322,11 @@ test("media renderi xato bo'lsa ham DOCX matnli fallback bilan tayyorlanadi", as
       chapter,
       { id: "conclusion", title: "Xulosa", content: [] },
     ],
-    references: ["Sinov manbasi"],
+    references: [
+      "Ogata, K. (2010). Modern control engineering (5th ed.). Prentice Hall.",
+      "Sinov manbasi",
+      "Esram, T., & Chapman, P. L. (2007). Comparison of photovoltaic array maximum power point tracking techniques. IEEE Transactions on Energy Conversion, 22(2), 439–449. https://doi.org/10.1109/TEC.2006.874230",
+    ],
   }, cache);
   assert.equal(docx.subarray(0, 2).toString("ascii"), "PK");
   const zip = await JSZip.loadAsync(docx);

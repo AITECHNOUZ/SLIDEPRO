@@ -15,14 +15,14 @@ const {
 } = require("../src/mustaqil/generate");
 
 const references = [
-  "Karimov, A. (2020). O‘zbekiston ta’lim tizimi va rivojlanish asoslari. Fan va texnologiya. 248 pp. https://doi.org/10.0000/refs.uz.2020.karimov",
-  "Ivanov, I. I. (2019). Основы автоматического управления. Наука. 320 pp. https://doi.org/10.0000/refs.ru.2019.ivanov",
-  "Smith, J. (2021). The fundamentals of control systems. Academic Press. 286 pp. https://doi.org/10.0000/refs.en.2021.smith",
-  "Rahimov, B. (2018). O‘zbek adabiyoti tarixi va nazariyasi. Sharq. 275 pp. https://doi.org/10.0000/refs.uz.2018.rahimov",
-  "Petrov, P. P. (2022). Исследование систем управления. Издательство МГУ. 310 pp. https://doi.org/10.0000/refs.ru.2022.petrov",
-  "Brown, R. (2020). Research methods in engineering. Springer. 296 pp. https://doi.org/10.0000/refs.en.2020.brown",
-  "Usmonov, D. (2023). O‘quv jarayonini boshqarish va tahlil. Universitet nashriyoti. 264 pp. https://doi.org/10.0000/refs.uz.2023.usmonov",
-  "Sidorov, S. S. (2021). Современные методы анализа данных. Научное издательство. 302 pp. https://doi.org/10.0000/refs.ru.2021.sidorov",
+  "Karimov, A. (2020). O‘zbekiston ta’lim tizimi va rivojlanish asoslari. Fan va texnologiya. 248 pp.",
+  "Ivanov, I. I. (2019). Основы автоматического управления. Наука. 320 pp.",
+  "Smith, J. (2021). The fundamentals of control systems. Academic Press. 286 pp.",
+  "Rahimov, B. (2018). O‘zbek adabiyoti tarixi va nazariyasi. Sharq. 275 pp.",
+  "Petrov, P. P. (2022). Исследование систем управления. Издательство МГУ. 310 pp.",
+  "Brown, R. (2020). Research methods in engineering. Springer. 296 pp.",
+  "Usmonov, D. (2023). O‘quv jarayonini boshqarish va tahlil. Universitet nashriyoti. 264 pp.",
+  "Sidorov, S. S. (2021). Современные методы анализа данных. Научное издательство. 302 pp.",
 ];
 const incompleteReferences = [
   "Taylor, A. (2020). The control systems study 1. Test Press.",
@@ -228,8 +228,9 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
     assert.notEqual(bibliographyStart, -1, "bibliografiya bo'limi DOCX ichida mavjud");
     const bibliographyXml = documentXml.slice(bibliographyStart);
     const bibliographyNumbers = [...bibliographyXml.matchAll(/<w:t(?:\s[^>]*)?>(\d+)\.\s/g)].map(match => Number(match[1]));
-    assert.deepEqual(bibliographyNumbers, Array.from({ length: 12 }, (_, index) => index + 1), "DOCX adabiyotlar sahifasida aynan 12 ta manba 1–12 tartibda raqamlanadi");
-    assert.equal((bibliographyXml.match(/https:\/\/doi\.org\/10\./g) || []).length, 12, "har bir adabiyot yozuvida DOI havolasi bo‘ladi");
+    assert.deepEqual(bibliographyNumbers, Array.from({ length: references.length }, (_, index) => index + 1),
+      "DOCX'da faqat haqiqiy (to'liq) manbalar 1..N tartibda chiqadi — 12 taga soxta yozuv bilan to'ldirilmaydi");
+    assert.doesNotMatch(bibliographyXml, /10\.0000\/|slidepro\.(?:uz|ru|en)/, "yakuniy ro'yxatda namunaviy/soxta DOI bo'lmaydi");
     assert.match(bibliographyXml, /\d+ pp\./, "kitob yozuvlarida umumiy sahifa soni ko‘rsatiladi");
     assert.doesNotMatch(bibliographyXml, /AI-generated|verify before citation|synthetic|fallback/i, "yakuniy bibliografiyada sintetik yoki fallback belgisi bo'lmaydi");
     assert.ok(bibliographyXml.indexOf("Brown, R.") < bibliographyXml.indexOf("Ivanov, I. I."), "APA manbalari muallif bo'yicha saralanadi");
@@ -243,7 +244,7 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
     const bibliographyRetries = requests.filter(prompt => prompt.includes("BIBLIOGRAFIYANI TUZATISH"));
     assert.equal(bibliographyRetries.length, 1, "til qamrovi/APA muammosi uchun faqat bitta alohida bibliografiya retry bo'ladi");
     assert.match(bibliographyRetries[0], /references maydonini qaytar/);
-    assert.match(bibliographyRetries[0], /AYNAN 12 ta yozuv/);
+    assert.match(bibliographyRetries[0], /FAQAT HAQIQIY MANBALAR/);
     assert.match(bibliographyRetries[0], /Hech qanday AI, sintetik, tekshirish yoki boshqa belgi\/yorliq\/izoh qo'shma/);
     assert.doesNotMatch(bibliographyRetries[0], /AI-generated|verify before citation|AI-illustrativ/i);
     assert.doesNotMatch(bibliographyRetries[0], /Nazariy asoslar|Amaliy tahlil/, "retry boblar mazmunini qayta yaratishni so'ramaydi");

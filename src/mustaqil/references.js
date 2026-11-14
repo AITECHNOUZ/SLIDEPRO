@@ -4,6 +4,11 @@ const REQUIRED_LANGUAGES = Object.freeze({
   en: "ingliz",
 });
 const BIBLIOGRAPHY_TARGET = 12;
+// Haqiqiy manba yetishmasa ro'yxat qisqaroq bo'ladi — lekin hech qachon uydirma yozuv qo'shilmaydi.
+const BIBLIOGRAPHY_MINIMUM = 8;
+// Namuna/placeholder DOI'lar (10.0000/..., .../example, slidepro) — soxta deb hisoblanadi.
+const PLACEHOLDER_DOI = /10\.0{4,}\/|10\.1234\/(?:example|test|labels|translation|methods)\b|slidepro|\bexample\b/i;
+const PLACEHOLDER_AUTHOR = /^(?:Olimov, A\. A\.|Author|Muallif|Автор|Familiya, I\. O\.)$/i;
 
 const UZBEK_TERMS = new Set(`
   o'zbekiston oʻzbekiston o‘zbekiston o'zbek oʻzbek o‘zbek ta'lim таълим iqtisodiyot иқтисодиёт
@@ -50,20 +55,22 @@ function apaReferenceProblems(reference) {
   if (!parsed) return ["APA 7 ketma-ketligi to'liq emas: muallif, (yil). sarlavha. nashr/nashriyot kerak"];
 
   const problems = [];
-  const hasDoiLink = /https?:\/\/doi\.org\/10\.\d{4,9}\/\S+/iu.test(text);
-  if (!hasDoiLink) problems.push("har bir manba uchun DOI havolasi (https://doi.org/...) kerak");
+  const year = Number(String(parsed.date).slice(0, 4));
+  const currentYear = new Date().getFullYear();
+  if (!Number.isFinite(year) || year < 1800 || year > currentYear) problems.push("nashr yili yaroqsiz (kelajakdagi yoki noaniq yil)");
+  if (PLACEHOLDER_AUTHOR.test(parsed.author.trim())) problems.push("muallif nomi namunaviy (placeholder)");
   if (JOURNAL_HINT.test(parsed.publication)) {
     const hasVolume = /,\s*\d+(?:\s*\([^)]+\))?/u.test(parsed.publication);
-    const hasLocator = /,\s*\d+\s*[-–—]\s*\d+|\barticle\s+[\p{L}\d-]+|\be\d{3,}\b/iu.test(parsed.publication);
+    const hasLocator = /,\s*\d+\s*[-–—]\s*\d+|\barticle\s+[\p{L}\d-]+|\be\d{3,}\b|https?:\/\/doi\.org\//iu.test(parsed.publication);
     if (!hasVolume) problems.push("jurnal maqolasi uchun jild (va mavjud bo'lsa son) ko'rsatilmagan");
     else if (!hasLocator) problems.push("jurnal maqolasi uchun sahifalar, maqola raqami yoki DOI ko'rsatilmagan");
-  } else if (!/\b\d{2,4}\s*(?:pp?\.?|pages?|с\.?|sahifa(?:lar)?|бет(?:лар)?|bet(?:lar)?)/iu.test(parsed.publication)) {
-    problems.push("kitob uchun umumiy sahifa soni ko'rsatilmagan");
   }
+  // DOI ixtiyoriy (ko'p kitoblarda, ayniqsa rus va o'zbek nashrlarida DOI yo'q), lekin bo'lsa — haqiqiy formatda.
   const doiMatch = text.match(/\bdoi\s*:\s*(\S+)|https?:\/\/doi\.org\/([^\s]+)/iu);
   if (doiMatch) {
     const doi = (doiMatch[1] || doiMatch[2] || "").replace(/[),.;]+$/, "");
     if (!/^10\.\d{4,9}\/\S+$/i.test(doi)) problems.push("DOI formati yaroqsiz");
+    else if (PLACEHOLDER_DOI.test(doi)) problems.push("DOI namunaviy/soxta (placeholder)");
   }
   const urlMatches = text.match(/https?:\/\/\S+/giu) || [];
   for (const rawUrl of urlMatches) {
@@ -107,7 +114,7 @@ function referenceLanguage(reference) {
   return classifyTitleLanguage(parsed.title);
 }
 
-function validateBibliography(references, { minimumCount = BIBLIOGRAPHY_TARGET } = {}) {
+function validateBibliography(references, { minimumCount = BIBLIOGRAPHY_MINIMUM } = {}) {
   const entries = Array.isArray(references) ? references.filter(item => typeof item === "string" && item.trim()) : [];
   const problems = [];
   const validEntries = [];
@@ -134,7 +141,7 @@ function validateBibliography(references, { minimumCount = BIBLIOGRAPHY_TARGET }
     problems.push(`asl nashr tili aniqlangan manbalar yetishmaydi: ${missingLanguages.map(language => REQUIRED_LANGUAGES[language]).join(", ")}`);
   }
   if (invalidEntries.length) {
-    problems.push(`${invalidEntries.length} ta yozuvda APA 7 maydonlari yoki DOI/URL to'liq emas`);
+    problems.push(`${invalidEntries.length} ta yozuv APA 7 talabiga javob bermaydi yoki namunaviy/soxta`);
   }
 
   return {
@@ -175,67 +182,29 @@ function selectBestReferences(...lists) {
   return selected;
 }
 
-function illustrativeReference(language, index, topic = "mavzu") {
-  const safeTopic = String(topic || "mavzu").replace(/[\r\n]+/g, " ").trim().slice(0, 120) || "mavzu";
-  const year = new Date().getFullYear();
-  const localized = {
-    uz: {
-      author: `Olimov, A. A.`,
-      title: `${safeTopic}: nazariy asoslar va amaliy yondashuvlar`,
-      publication: `Universitet nashriyoti. ${240 + Number(index)} pp.`,
-    },
-    ru: {
-      author: `Ivanov, I. I.`,
-      title: `Теоретические основы и прикладные подходы к теме «${safeTopic}»`,
-      publication: `Научное издательство. ${260 + Number(index)} pp.`,
-    },
-    en: {
-      author: `Miller, J. A.`,
-      title: `Theoretical foundations and applied approaches to ${safeTopic}`,
-      publication: `Academic Press. ${280 + Number(index)} pp.`,
-    },
-  }[language];
-  const serial = String(index).padStart(2, "0");
-  return `${localized.author} (${year}). ${localized.title} (${serial}). ${localized.publication} https://doi.org/10.0000/slidepro.${language}.${serial}.`;
-}
-
-function completeBibliography(references, { topic = "mavzu", targetCount = BIBLIOGRAPHY_TARGET } = {}) {
+/**
+ * Yakuniy ro'yxat: faqat to'liq va haqiqiy ko'rinishdagi yozuvlar (uch til ustuvorligi bilan),
+ * ko'pi bilan targetCount ta. Yetishmasa — UYDIRMA YOZUV QO'SHILMAYDI, ro'yxat qisqa qoladi.
+ */
+function completeBibliography(references, { targetCount = BIBLIOGRAPHY_TARGET } = {}) {
   const count = Math.max(0, Math.floor(Number(targetCount) || BIBLIOGRAPHY_TARGET));
-  const selected = selectBestReferences(...(Array.isArray(references) ? [references] : []))
-    .slice(0, count);
-  let generatedIndex = 1;
-  const languages = Object.keys(REQUIRED_LANGUAGES);
-  const presentLanguages = new Set(selected.map(referenceLanguage).filter(Boolean));
-  const missingLanguages = languages.filter(language => !presentLanguages.has(language));
-  if (selected.length + missingLanguages.length > count) {
-    selected.length = Math.max(0, count - missingLanguages.length);
-  }
-
-  for (const language of missingLanguages) {
-    if (selected.length >= count) break;
-    if (!presentLanguages.has(language)) {
-      selected.push(illustrativeReference(language, generatedIndex++, topic));
-      presentLanguages.add(language);
-    }
-  }
-  while (selected.length < count) {
-    const language = languages[(selected.length + generatedIndex - 1) % languages.length];
-    selected.push(illustrativeReference(language, generatedIndex++, topic));
-  }
-  return selected;
+  return selectBestReferences(...(Array.isArray(references) ? [references] : [])).slice(0, count);
 }
 
 function buildBibliographyRepairPrompt({ topic, language, references, validation, sourceContent }) {
   const suppliedSources = sourceContent
-    ? `\n\nFOYDALANUVCHI BERGAN MANBA KONTENTI:\n---\n${String(sourceContent).slice(0, 3000)}\n---\nAgar bu kontentda TEKSHIRILGAN MANBALAR ro'yxati bo'lsa, uning yozuvlarini o'zgartirma; 12 taga yetmaydigan qismini standart APA yozuvlari bilan to'ldir.`
+    ? `\n\nFOYDALANUVCHI BERGAN MANBA KONTENTI:\n---\n${String(sourceContent).slice(0, 3000)}\n---\nAgar bu kontentda manbalar ro'yxati bo'lsa, ularni o'zgartirmasdan birinchi o'ringa qo'y.`
     : "";
   return `BIBLIOGRAFIYANI TUZATISH — faqat references maydonini qaytar; boblar, reja, matn, xulosa yoki boshqa mazmunga tegma.
 Mavzu: ${topic || "ko'rsatilmagan"}. Ish tili: ${language || "o'zbek"}.
-Talab: AYNAN ${BIBLIOGRAPHY_TARGET} ta yozuv, APA 7 formatida. Ro'yxatda asl nashr tilida kamida bittadan o'zbekcha, ruscha va inglizcha manba bo'lsin. Til faqat asarning asl tildagi sarlavhasidan aniqlansin: tarjima asarlar, tarjima sarlavhalari, bibliografik izohlar yoki til yorliqlari til qamroviga kirmaydi. Haqiqiy asar topilsa, sarlavha va nashr ma'lumotlarini asl yozuvi va tilida saqla.
-APA 7: muallif/tashkilot. (yil). Sarlavha. Kitob uchun nashriyot, umumiy sahifalar soni (masalan, 248 pp.) va DOI havolasi; jurnal maqolasi uchun jurnal nomi, jild(son), sahifa oralig'i yoki maqola raqami va DOI havolasi bo'lsin. HAR bir yozuvda https://doi.org/10.... ko'rinishidagi DOI havolasi va sahifa ma'lumoti bo'lishi shart. Manbaning haqiqiyligini tekshirish shart emas; format maydonlari uchun mavzuga mos, ishonarli bibliografik ma'lumot kiritish mumkin. Hech qanday AI, sintetik, tekshirish yoki boshqa belgi/yorliq/izoh qo'shma. Foydalanuvchi bergan manba metadata'sini o'zgartirma.
+ENG MUHIM TALAB — FAQAT HAQIQIY MANBALAR: har bir yozuv haqiqatan nashr etilgan, aniq bilganing asar bo'lsin (mavzu bo'yicha klassik darsliklar, ko'p iqtibos qilingan monografiyalar va maqolalar, standartlar). Mavjudligiga ishonching komil bo'lmagan asarni YOZMA — o'rniga boshqa, aniq bilgan asaringni yoz. Muallif, sarlavha, yil yoki nashriyotni to'qima.
+Soni: ${BIBLIOGRAPHY_TARGET} tagacha (kamida ${BIBLIOGRAPHY_MINIMUM} ta); haqiqiy manba yetmasa, kamroq yoz — soxta yozuv bilan to'ldirma.
+Til: imkon qadar o'zbekcha, ruscha va inglizcha manbalar aralash bo'lsin; har bir asar asl tilidagi sarlavhasi bilan yozilsin (tarjima sarlavha emas).
+APA 7: Muallif, A. A. (yil). Sarlavha. Nashriyot. — jurnal maqolasi uchun: Jurnal nomi, jild(son), sahifalar. DOI faqat aniq bilsang qo'sh (https://doi.org/10....); taxminiy, namunaviy yoki 10.0000 kabi DOI yozma. Sahifa sonini bilmasang yozma.
+Hech qanday AI, sintetik, tekshirish yoki boshqa belgi/yorliq/izoh qo'shma.
 Avvalgi references: ${JSON.stringify(Array.isArray(references) ? references : [])}
 Aniqlangan muammolar: ${JSON.stringify(validation?.problems || [])}${suppliedSources}
-Faqat quyidagi JSON obyektni qaytar, boshqa kalit yoki izohsiz: {"references":["to'liq APA 7 manbasi", ...]} references massivi AYNAN ${BIBLIOGRAPHY_TARGET} elementdan iborat bo'lsin.`;
+Faqat quyidagi JSON obyektni qaytar, boshqa kalit yoki izohsiz: {"references":["to'liq APA 7 manbasi", ...]}`;
 }
 
 function sortReferencesAPA(references) {
@@ -271,13 +240,14 @@ function parseApaPartsForDisplay(reference) {
 module.exports = {
   REQUIRED_LANGUAGES,
   BIBLIOGRAPHY_TARGET,
+  BIBLIOGRAPHY_MINIMUM,
+  PLACEHOLDER_DOI,
   parseApaReference,
   apaReferenceProblems,
   classifyTitleLanguage,
   referenceLanguage,
   validateBibliography,
   selectBestReferences,
-  illustrativeReference,
   completeBibliography,
   buildBibliographyRepairPrompt,
   sortReferencesAPA,
