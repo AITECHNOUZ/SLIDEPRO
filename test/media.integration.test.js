@@ -4,7 +4,7 @@ const JSZip = require("jszip");
 const sharp = require("sharp");
 const { renderFormula } = require("../src/mustaqil/formula");
 const { renderChart, wrapLabelLines, barSVG, lineSVG, pieSVG } = require("../src/mustaqil/chart");
-const { buildFlowchartDot, renderFlowchart } = require("../src/mustaqil/flowchart");
+const { buildFlowchartDot, renderFlowchart, renderGraphvizFlowchart } = require("../src/mustaqil/flowchart");
 const { buildDocument } = require("../src/mustaqil/builder");
 const { prerenderMedia } = require("../src/mustaqil/generate");
 
@@ -42,9 +42,10 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   }
 
   const singleSlicePie = await renderChart({ chartType: "pie", title: "Yagona ulush", labels: ["A", "B"], values: [5, 0] });
-  const piePixels = await sharp(singleSlicePie.buf).raw().toBuffer({ resolveWithObject: true });
-  const centerOffset = (150 * piePixels.info.width + 180) * piePixels.info.channels;
-  assert.notDeepEqual([...piePixels.data.subarray(centerOffset, centerOffset + 3)], [255, 255, 255], "100% li pie bo‘lagi to‘liq doira sifatida chizilishi kerak");
+  assert.equal((await sharp(singleSlicePie.buf).metadata()).format, "png", "nol bo'lakli pie ham GOST rendererda chiziladi");
+  const pieSvgPixels = await sharp(Buffer.from(pieSVG({ labels: ["A", "B"], values: [5, 0] }))).raw().toBuffer({ resolveWithObject: true });
+  const centerOffset = (150 * pieSvgPixels.info.width + 180) * pieSvgPixels.info.channels;
+  assert.notDeepEqual([...pieSvgPixels.data.subarray(centerOffset, centerOffset + 3)], [255, 255, 255], "SVG zaxirada 100% li pie bo'lagi to'liq doira sifatida chizilishi kerak");
 
   const flowchartInput = {
     type: "flowchart",
@@ -74,8 +75,8 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   const flowchart = await renderFlowchart(flowchartInput);
   const flowchartMetadata = await sharp(flowchart.buf).metadata();
   assert.equal(flowchartMetadata.format, "png");
-  assert.ok(flowchart.width > 0 && flowchart.width <= 520);
-  assert.ok(flowchart.height > 0 && flowchart.height <= 620);
+  assert.ok(flowchart.width > 0 && flowchart.width <= 595);
+  assert.ok(flowchart.height > 0 && flowchart.height <= 760);
   assert.ok(Math.abs(flowchart.width / flowchart.height - flowchartMetadata.width / flowchartMetadata.height) < 0.01, "qator oralig‘i oshganda rasm proporsiyasi saqlansin");
   imageCache.set("d_2", flowchart);
 
@@ -96,12 +97,17 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   };
   const algorithmFlowchart = await renderFlowchart(algorithmFlowchartInput);
   const algorithmMetadata = await sharp(algorithmFlowchart.buf).metadata();
-  assert.equal(algorithmMetadata.width, 576);
-  assert.equal(algorithmMetadata.height, 1035);
-  assert.equal(algorithmFlowchart.width, 1.92 * 96);
-  assert.equal(algorithmFlowchart.height, 3.45 * 96);
+  // GOST sxema 1:1 masshtabda (300 dpi): Word'dagi o'lcham PNG o'lchamiga aynan mos
+  assert.ok(Math.abs(algorithmFlowchart.width - algorithmMetadata.width / 300 * 96) < 0.5, "algoritm sxemasi 1:1 masshtabda joylanadi");
+  assert.ok(algorithmFlowchart.width >= 2 * 96 && algorithmFlowchart.width <= 595, "algoritm sxemasi o'qiladigan kenglikda (≥2 dyuym, ≤6,2 dyuym)");
   assert.ok(Math.abs(algorithmFlowchart.width / algorithmFlowchart.height - algorithmMetadata.width / algorithmMetadata.height) < 0.001,
-    "vertikal algoritm rasmi 1.92 × 3.45 dyuymga aynan mos nisbatda saqlansin");
+    "vertikal algoritm rasmi proporsiyasi saqlansin");
+  const graphvizAlgorithm = await renderGraphvizFlowchart(algorithmFlowchartInput);
+  const graphvizMetadata = await sharp(graphvizAlgorithm.buf).metadata();
+  assert.equal(graphvizMetadata.width, 576, "Graphviz zaxira renderi avvalgi 1.92 × 3.45 dyuymli kanvasni saqlaydi");
+  assert.equal(graphvizMetadata.height, 1035);
+  assert.equal(graphvizAlgorithm.width, 1.92 * 96);
+  assert.equal(graphvizAlgorithm.height, 3.45 * 96);
   imageCache.set("d_5", algorithmFlowchart);
 
   const controllerFlowchart = await renderFlowchart({
@@ -170,7 +176,11 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
       },
       { id: "conclusion", title: "Xulosa", content: [] },
     ],
-    references: ["Sinov manbasi"],
+    references: [
+      "Ogata, K. (2010). Modern control engineering (5th ed.). Prentice Hall.",
+      "Sinov manbasi",
+      "Esram, T., & Chapman, P. L. (2007). Comparison of photovoltaic array maximum power point tracking techniques. IEEE Transactions on Energy Conversion, 22(2), 439–449. https://doi.org/10.1109/TEC.2006.874230",
+    ],
   }, imageCache);
 
   assert.ok(Buffer.isBuffer(docx));
@@ -180,15 +190,20 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   const zip = await JSZip.loadAsync(docx);
   const documentXml = await zip.file("word/document.xml").async("string");
   const mediaEntries = Object.entries(zip.files).filter(([name, entry]) => name.startsWith("word/media/") && !entry.dir);
-  assert.equal(mediaEntries.length, 7, "formula, chart va uchta Graphviz rasm fayli DOCX ichida bo'lishi kerak");
+  assert.equal(mediaEntries.length, 5, "chart va uchta Graphviz rasm fayli DOCX ichida; formulalar rasm emas, OMML");
+  assert.ok((documentXml.match(/<m:oMath>/g) || []).length >= 2, "formulalar Word native tenglama (OMML) bo'lib yoziladi");
   const imageParagraphs = (documentXml.match(/<w:p\b[\s\S]*?<\/w:p>/g) || []).filter(paragraph => paragraph.includes("<w:drawing>"));
-  assert.equal(imageParagraphs.length, 7, "barcha yettita rasm alohida DOCX paragrafida joylashishi kerak");
+  assert.equal(imageParagraphs.length, 5, "barcha beshta rasm alohida DOCX paragrafida joylashishi kerak");
   assert.ok(imageParagraphs.every(paragraph => /<w:keepNext\b/.test(paragraph)), "har bir rasm ostyozuv paragrafi bilan birga keyingi sahifaga ko'chishi kerak");
   assert.match(documentXml, /1-rasm\. Sinov diagrammasi/);
   assert.match(documentXml, /2-rasm\. Ichimlik suvini tozalash tarkibi/);
   assert.match(documentXml, /3-rasm\. Ikkinchi diagramma/);
   assert.match(documentXml, /5-rasm\. Suv sifatini tekshirish algoritmi/);
-  assert.match(documentXml, /<wp:extent cx="1752600" cy="3152775"\/>/, "algoritm rasmi Word hujjatida 1.92 × 3.45 dyuymga mos o‘lchamda qoladi");
+  const algorithmEmu = Math.round(algorithmFlowchart.width / 96 * 914400);
+  const algorithmExtent = documentXml.match(/<wp:extent cx="(\d+)" cy="(\d+)"\/>/g)
+    .map(item => item.match(/cx="(\d+)"/)[1]).map(Number)
+    .some(cx => Math.abs(cx - algorithmEmu) < 9525 * 2);
+  assert.ok(algorithmExtent, "algoritm sxemasi Word hujjatida 1:1 masshtabdagi o'lchamida qoladi");
   assert.match(documentXml, /Manba\/izoh: Official statistical yearbook/, "haqiqiy manba chart ostyozuvida saqlansin");
   assert.match(documentXml, /4-rasm\. PID boshqaruv tizimining tarkibi/);
   assert.match(documentXml, /\(1-formula\. Sinov formulasi\)/);
@@ -200,11 +215,12 @@ test("MathJax, bar/line/pie va DOCX ichiga rasm qo‘shish integratsiyasi", asyn
   const referenceStart = documentXml.lastIndexOf("Foydalanilgan adabiyotlar");
   const referencesXml = documentXml.slice(referenceStart);
   const referenceNumbers = [...referencesXml.matchAll(/<w:t(?:\s[^>]*)?>(\d+)\.\s/g)].map(match => Number(match[1]));
-  assert.deepEqual(referenceNumbers, Array.from({ length: 12 }, (_, index) => index + 1), "builder bevosita chaqirilganda ham 12 ta manbani 1–12 tartibida chiqaradi");
-  assert.equal((referencesXml.match(/https:\/\/doi\.org\/10\./g) || []).length, 12);
+  assert.deepEqual(referenceNumbers, [1, 2], "builder faqat to'liq APA yozuvlarni chiqaradi, soxta yozuv qo'shmaydi");
+  assert.doesNotMatch(referencesXml, /Sinov manbasi|10\.0000/);
+  assert.equal((referencesXml.match(/https:\/\/doi\.org\/10\./g) || []).length, 1, "faqat haqiqiy DOI saqlanadi");
 });
 
-test("DOCX’dagi barcha diagrammalar sahifa eni/balandligining 60 foizidan oshmaydi va nisbatini saqlaydi", async () => {
+test("DOCX’dagi GOST diagrammalari sahifa enining 76, balandligining 60 foizidan oshmaydi va nisbatini saqlaydi", async () => {
   const widePng = await sharp({
     create: { width: 2000, height: 1000, channels: 4, background: { r: 230, g: 240, b: 250, alpha: 1 } },
   }).png().toBuffer();
@@ -245,12 +261,12 @@ test("DOCX’dagi barcha diagrammalar sahifa eni/balandligining 60 foizidan oshm
     return { width: Number(extent[1]), height: Number(extent[2]) };
   });
   extents.forEach(({ width, height }) => {
-    assert.ok(width <= 210 * 36_000 * 0.6, "rasm eni sahifa enining 60 foizidan oshmasin");
+    assert.ok(width <= 210 * 36_000 * 0.76, "rasm eni sahifa enining 76 foizidan (≈6,2 dyuym) oshmasin");
     assert.ok(height <= 297 * 36_000 * 0.6, "rasm bo‘yi sahifa balandligining 60 foizidan oshmasin");
   });
   assert.ok(Math.abs(extents[0].width / extents[0].height - 2) < 0.01, "keng rasm proporsiyasi o‘zgarmasin");
   assert.ok(Math.abs(extents[1].width / extents[1].height - 0.5) < 0.01, "baland rasm proporsiyasi o‘zgarmasin");
-  assert.ok(Math.abs(extents[0].width - 210 * 36_000 * 0.6) < 9_525, "keng tasvir 60 foizlik en limitiga qisqartirilsin");
+  assert.ok(Math.abs(extents[0].width - 210 * 36_000 * 0.76) < 9_525, "keng tasvir 76 foizlik en limitiga qisqartirilsin");
   assert.ok(Math.abs(extents[1].height - 297 * 36_000 * 0.6) < 9_525, "baland tasvir 60 foizlik balandlik limitiga qisqartirilsin");
 });
 
@@ -306,7 +322,11 @@ test("media renderi xato bo'lsa ham DOCX matnli fallback bilan tayyorlanadi", as
       chapter,
       { id: "conclusion", title: "Xulosa", content: [] },
     ],
-    references: ["Sinov manbasi"],
+    references: [
+      "Ogata, K. (2010). Modern control engineering (5th ed.). Prentice Hall.",
+      "Sinov manbasi",
+      "Esram, T., & Chapman, P. L. (2007). Comparison of photovoltaic array maximum power point tracking techniques. IEEE Transactions on Energy Conversion, 22(2), 439–449. https://doi.org/10.1109/TEC.2006.874230",
+    ],
   }, cache);
   assert.equal(docx.subarray(0, 2).toString("ascii"), "PK");
   const zip = await JSZip.loadAsync(docx);

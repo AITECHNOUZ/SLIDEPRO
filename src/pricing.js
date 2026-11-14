@@ -10,7 +10,7 @@ function calcPrice(slides) {
 // Mustaqil ish uchun sahifaga asoslangan narx
 // Agar alohida sozlanmagan bo'lsa, slayd narxi bilan bir xil (per unit)
 function calcMustaqilPrice(pages) {
-  const base = parseInt(getSetting("base_price", "0"), 10) || 0;
+  const base = parseInt(getSetting("mustaqil_base_price", getSetting("base_price", "0")), 10) || 0;
   const perPage = parseInt(getSetting("mustaqil_price_per_page", getSetting("price_per_slide", "5000")), 10) || 0;
   return base + perPage * pages;
 }

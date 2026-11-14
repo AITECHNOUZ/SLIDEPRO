@@ -68,8 +68,8 @@ test("Graphviz slotlari mazmunga ko‘ra besh semantik turdan birini determinist
   const chapters = scenarios.map(([title, purpose], index) => ({
     id: `semantic-${index + 1}`, title, flowchart_count: 1, flowchart_plans: [{ title, purpose }],
   }));
-  const selected = buildMediaSlots(chapters, { topic: "Mavzuga tegishli chizmalar" }).filter(slot => slot.type === "flowchart");
-  assert.equal(FLOWCHART_TEMPLATES.length, 5);
+  const selected = buildMediaSlots(chapters, { topic: "Mavzuga tegishli chizmalar", random: () => 0 }).filter(slot => slot.type === "flowchart");
+  assert.equal(FLOWCHART_TEMPLATES.length, 11);
   assert.deepEqual(selected.map(slot => slot.diagram_type), scenarios.map(([, , type]) => type));
   selected.forEach(slot => {
     assert.equal(slot.template_id, slot.diagram_type);
@@ -84,7 +84,7 @@ test("Matplotlib slotlari matematik grafik va tajriba natijalarini ajratadi", ()
     { id: "math", title: "Matematik funksiyalar grafigi", chart_count: 1, chart_type: "bar", chart_plans: [{ title: "Parabola", variable: "y = x kvadrat" }] },
     { id: "lab", title: "Tajriba natijalari", chart_count: 1, chart_type: "pie", chart_plans: [{ title: "Harorat bo‘yicha sinov", variable: "Vaqt bo‘yicha o‘lchangan konsentratsiya" }] },
   ];
-  const charts = buildMediaSlots(chapters).filter(slot => slot.type === "chart");
+  const charts = buildMediaSlots(chapters, { random: () => 0 }).filter(slot => slot.type === "chart");
   assert.deepEqual(charts.map(slot => slot.diagram_type), ["mathematical_graph", "experiment_results"]);
   assert.deepEqual(charts.map(slot => slot.chartType), ["line", "line"], "Matematik funksiya hamda vaqt bo‘yicha tajriba natijasi chiziqli ko‘rinishda saqlansin");
 });
@@ -148,7 +148,8 @@ test("media LLM so'rovlari formula, grafik, Graphviz va jadval uchun qisqa struk
   assert.match(flowPrompt, /DOT yoki kod qaytarma/);
   assert.match(flowPrompt, /Tanlangan va o‘zgarmas diagram_type: uml_software_architecture/);
   assert.match(flowPrompt, /haqiqiy dasturiy komponent, klass, interfeys/);
-  assert.match(flowPrompt, /Graphviz/i);
+  assert.match(flowPrompt, /blok-sxema uchun JSON/i);
+  assert.match(flowPrompt, /GOST 19\.701/);
   assert.match(flowPrompt, /Suvni tozalash/);
   assert.match(flowPrompt, /Dastur arxitekturasi bo‘lmagan mavzuda bu turdan foydalanma/);
   assert.match(flowPrompt, /generic to‘ldiruvchilar/);
@@ -446,4 +447,22 @@ test("parallel worker'lar berilgan concurrency chegarasidan oshmaydi va natija t
   assert.ok(maximum <= 3);
   assert.equal(maximum, 3);
   assert.deepEqual(values, Array.from({ length: 11 }, (_, index) => index * 2));
+});
+
+test("grafik slotlari hujjat ichida turlarni takrorlamasdan xilma-xil tanlaydi", () => {
+  const make = () => [1, 2, 3, 4, 5].map(index => ({
+    id: `c${index}`, title: `Bob ${index}: ko'rsatkichlar dinamikasi va taqsimoti`, chart_count: 1, chart_type: "bar",
+    chart_plans: [{ title: `Ko'rsatkich ${index}` }],
+  }));
+  const chapters = make();
+  let tick = 0;
+  const charts = buildMediaSlots(chapters, { random: () => ((tick++ * 0.37) % 1) }).filter(slot => slot.type === "chart");
+  const kinds = charts.map(slot => slot.diagram_type || `classic:${slot.chartType}`);
+  assert.equal(new Set(kinds).size, kinds.length, `takror tur: ${kinds.join(", ")}`);
+  charts.forEach((slot, index) => {
+    if (slot.diagram_type) {
+      assert.equal(chapters[index].chart_plans[0].diagram_type, slot.diagram_type, "tanlangan tur rejaga yoziladi");
+      assert.equal(chapters[index].chart_plans[0].chartType, slot.chartType);
+    }
+  });
 });

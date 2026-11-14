@@ -5,8 +5,12 @@
 const sharp = require("sharp");
 const { normalizeChartData } = require("./chart-data");
 const { renderMatplotlibChart } = require("./matplotlib");
+const { EXTRA_CHART_TYPES } = require("./chart-data");
 
-const COLORS = ["#2E8AA8", "#E0A444", "#1FA35A", "#C44536", "#73304A", "#16B0A0", "#5E7079", "#B5513F"];
+let svgFallbackReported = false;
+// SVG zaxira ham GOST palitrasida: to'q ko'k oqim, och ko'k maydon, kulranglar.
+const COLORS = ["#1f5fa6", "#5b8cc4", "#bcd9ee", "#555555", "#8fb8de", "#000000", "#a6a6a6", "#c0392b"];
+const LEGACY_COLORS = ["#2E8AA8", "#E0A444", "#1FA35A", "#C44536", "#73304A", "#16B0A0", "#5E7079", "#B5513F"];
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const tickText = (n) => String(Number(n.toPrecision(3)));
 
@@ -165,9 +169,22 @@ function pieSVG({ labels, values }) {
 }
 
 async function renderChart(chart) {
+  if (EXTRA_CHART_TYPES[chart?.diagram_type]) return renderMatplotlibChart(chart);
   const { chartType, labels, values, title, unit } = normalizeChartData(chart);
   if (["mathematical_graph", "experiment_results"].includes(chart.diagram_type)) {
     return renderMatplotlibChart({ ...chart, chartType, labels, values, title, unit });
+  }
+  // Oddiy bar/line/pie ham GOST uslubidagi matplotlib rendereridan o'tadi (300 dpi).
+  // Python/matplotlib yo'q muhitda (yoki SLIDEPRO_CHART_ENGINE=svg) SVG zaxira renderer ishlaydi.
+  if (process.env.SLIDEPRO_CHART_ENGINE !== "svg") {
+    try {
+      return await renderMatplotlibChart({ ...chart, diagram_type: undefined, chartType, labels, values, title, unit });
+    } catch (error) {
+      if (!svgFallbackReported) {
+        svgFallbackReported = true;
+        console.warn(`[mustaqil] GOST matplotlib renderi ishlamadi, SVG zaxira ishlatiladi: ${error.message}`);
+      }
+    }
   }
   let svg, width, height;
   if (chartType === "line") { svg = lineSVG({ labels, values, unit }); width = 600; height = 320; }

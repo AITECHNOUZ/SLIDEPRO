@@ -9,6 +9,7 @@ const {
   Header, Footer, PageNumber, convertMillimetersToTwip,
   WidthType, BorderStyle, TableLayoutType, VerticalAlign,
   NumberFormat, SectionType, UnderlineType,
+  TabStopType, LeaderType, TableOfContents,
 } = require("docx");
 const sharp = require("sharp");
 const { normalizeHeadingTitle } = require("./headings");
@@ -17,6 +18,8 @@ const { completeBibliography, sortReferencesAPA, parseApaPartsForDisplay } = req
 const { cleanMediaText, isSyntheticSource } = require("./media-captions");
 const { normalizeChartData } = require("./chart-data");
 const { normalizeFlowchartData } = require("./flowchart-data");
+const JSZip = require("jszip");
+const { safeLatexToOmml, OMML_NAMESPACE } = require("./omml");
 
 const mm = (n) => Math.round(n * 56.692);
 
@@ -28,6 +31,56 @@ const INDENT = mm(12.5);     // 1.25 sm
 const BLACK = "000000";
 const A4_PAGE_WIDTH_PX = 210 / 25.4 * 96;
 const A4_PAGE_HEIGHT_PX = 297 / 25.4 * 96;
+// GOST chizmalari ~6,2 dyuym (595 px) kenglikda: matn maydoni 165 mm = 624 px ichiga sig'adi.
+const FIGURE_PAGE_FRACTION = 0.76;
+
+// ─── OMML (Word native tenglama) ───────────────────────────
+// Paragraf qurilayotganda formula o'rniga noyob belgi (token) qo'yiladi; Packer DOCX ni
+// yig'gandan keyin document.xml ichida shu token turgan <w:r> butunlay <m:oMath> bilan
+// almashtiriladi. Natija — Word'da tahrirlanadigan haqiqiy tenglama (rasm emas).
+let activeMath = null;
+const mathToken = (index) => `\u27E6OMML${index}\u27E7`;
+
+function mathTokenRun(omml) {
+  if (!activeMath || !omml) return null;
+  activeMath.push(omml);
+  return new TextRun({ text: mathToken(activeMath.length - 1), font: FONT, size: FONT_SIZE, color: BLACK });
+}
+
+// Matndagi $...$, \(...\), \[...\], $$...$$ bo'laklarini ajratish
+const INLINE_MATH_RE = /\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$([^$\n]+?)\$/g;
+
+function splitInlineMath(text) {
+  const parts = [];
+  const source = String(text || "");
+  let last = 0;
+  let match;
+  INLINE_MATH_RE.lastIndex = 0;
+  while ((match = INLINE_MATH_RE.exec(source)) !== null) {
+    // "100$" kabi valyuta belgisini formula deb olmaymiz
+    if (match[4] != null && /\d\s?$/.test(source.slice(0, match.index))) continue;
+    if (match.index > last) parts.push({ text: source.slice(last, match.index) });
+    parts.push({ math: match[1] ?? match[2] ?? match[3] ?? match[4], raw: match[0] });
+    last = match.index + match[0].length;
+  }
+  if (last < source.length) parts.push({ text: source.slice(last) });
+  return parts;
+}
+
+async function injectOmml(buffer, formulas) {
+  if (!formulas || !formulas.length) return buffer;
+  const zip = await JSZip.loadAsync(buffer);
+  const file = zip.file("word/document.xml");
+  if (!file) return buffer;
+  let xml = await file.async("string");
+  const runRe = /<w:r>(?:(?!<\/w:r>)[\s\S])*?\u27E6OMML(\d+)\u27E7(?:(?!<\/w:r>)[\s\S])*?<\/w:r>/g;
+  xml = xml.replace(runRe, (whole, index) => formulas[Number(index)] || whole);
+  if (!/xmlns:m=/.test(xml.slice(0, 4000))) {
+    xml = xml.replace(/<w:document\b/, `<w:document xmlns:m="${OMML_NAMESPACE}"`);
+  }
+  zip.file("word/document.xml", xml);
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
 
 // ─── inline LaTeX tozalash (sarlavha/izoh uchun — matn qaytaradi) ──
 function cleanInlineLatex(text) {
@@ -121,8 +174,20 @@ function run(text, opts = {}) {
 }
 
 function para(text, opts = {}) {
-  // parseTextRuns ishlatiladi: X_sub → Word subscript, X^sup → superscript
-  const runs = parseTextRuns(String(text || ""));
+  // $...$ ichidagi formulalar → inline OMML; qolgan matn parseTextRuns orqali
+  // (X_sub → Word subscript, X^sup → superscript).
+  const runs = [];
+  for (const part of splitInlineMath(String(text || ""))) {
+    if (part.math != null) {
+      const omml = activeMath ? safeLatexToOmml(part.math, { display: false }) : null;
+      const token = omml ? mathTokenRun(omml) : null;
+      if (token) runs.push(token);
+      else runs.push(...parseTextRuns(part.raw));
+    } else if (part.text) {
+      runs.push(...parseTextRuns(part.text));
+    }
+  }
+  if (!runs.length) runs.push(...parseTextRuns(""));
   // bold/italic opts qo'llash kerak bo'lsa — barcha runlarga qo'shamiz
   if (opts.bold || opts.italic) {
     runs.forEach(r => { if (opts.bold) r.bold = true; if (opts.italic) r.italics = true; });
@@ -160,6 +225,8 @@ function heading1(text, opts = {}) {
   return new Paragraph({
     children: [new TextRun({ text: stripBob(text).toUpperCase(), font: FONT, size: FONT_SIZE, bold: true, color: BLACK })],
     pageBreakBefore: opts.pageBreakBefore || undefined,
+    outlineLevel: 0, // Word navigatsiya paneli va mundarija maydoni uchun
+    keepNext: true,
     spacing: { ...LINE_SPACING, before: mm(4), after: mm(2) },
     alignment: AlignmentType.CENTER,
     indent: undefined,
@@ -169,14 +236,17 @@ function heading1(text, opts = {}) {
 function heading2(text) {
   return new Paragraph({
     children: [new TextRun({ text: stripBob(text), font: FONT, size: FONT_SIZE, bold: true, color: BLACK })],
+    outlineLevel: 1,
+    keepNext: true, // sarlavha sahifa oxirida yolg'iz qolmasin
     spacing: { ...LINE_SPACING, before: mm(3), after: mm(2) },
     alignment: AlignmentType.LEFT,
     indent: { firstLine: INDENT },
   });
 }
 
-function captionPara(text) {
+function captionPara(text, { keepNext = false } = {}) {
   return new Paragraph({
+    keepNext: keepNext || undefined,
     children: [new TextRun({ text, font: FONT, size: SMALL_SIZE, italics: true, color: BLACK })],
     spacing: { line: 240, before: mm(1), after: mm(2) },
     keepLines: true,
@@ -194,15 +264,16 @@ function numberedMediaCaption(number, type, ...values) {
 }
 
 // ─── rasm bloki ────────────────────────────────────────────
-function imageBlock(media, caption, { maxPageFraction = 0.6 } = {}) {
+function imageBlock(media, caption, { maxPageFraction = 0.6, maxHeightFraction = 0.6 } = {}) {
   const buf = media.buf || media;
   const w = media.width || 440;
   const h = media.height || 200;
+  const heightFraction = maxPageFraction ? Math.min(maxPageFraction, maxHeightFraction) : null;
   const scale = maxPageFraction
-    ? Math.min(1, A4_PAGE_WIDTH_PX * maxPageFraction / w, A4_PAGE_HEIGHT_PX * maxPageFraction / h)
+    ? Math.min(1, A4_PAGE_WIDTH_PX * maxPageFraction / w, A4_PAGE_HEIGHT_PX * heightFraction / h)
     : 1;
   const maxWidth = maxPageFraction ? Math.floor(A4_PAGE_WIDTH_PX * maxPageFraction) : Infinity;
-  const maxHeight = maxPageFraction ? Math.floor(A4_PAGE_HEIGHT_PX * maxPageFraction) : Infinity;
+  const maxHeight = maxPageFraction ? Math.floor(A4_PAGE_HEIGHT_PX * heightFraction) : Infinity;
   const imageWidth = Math.max(1, Math.min(maxWidth, Math.round(w * scale)));
   const imageHeight = Math.max(1, Math.min(maxHeight, Math.round(h * scale)));
   const nodes = [];
@@ -260,7 +331,7 @@ function tableBlock(data, caption) {
   if (headers.length === 0 && rows.length === 0) return [];
   const nodes = [];
   const finalCaption = cleanMediaText(caption);
-  if (finalCaption) nodes.push(captionPara(finalCaption));
+  if (finalCaption) nodes.push(captionPara(finalCaption, { keepNext: true }));
   const headerRow = new TableRow({
     tableHeader: true,
     children: headers.map((h) => new TableCell({
@@ -297,6 +368,14 @@ function tableBlock(data, caption) {
   return nodes;
 }
 
+// Universitet nomidan shahar (titul pastidagi "Qarshi — 2026" qatori uchun)
+const COVER_CITIES = ["Toshkent", "Qarshi", "Samarqand", "Buxoro", "Namangan", "Andijon", "Farg'ona", "Termiz", "Nukus", "Urganch", "Jizzax", "Guliston", "Navoiy", "Qo'qon", "Chirchiq", "Shahrisabz", "Denov", "Xiva"];
+function coverCity(meta = {}) {
+  if (meta.city && String(meta.city).trim()) return String(meta.city).trim();
+  const source = String(meta.university || "").replace(/[’‘ʻ`]/g, "'");
+  return COVER_CITIES.find(name => new RegExp(`^${name}|\\s${name}`, "i").test(source)) || "";
+}
+
 // ─── MUQOVA SAHIFASI ────────────────────────────────────────
 // A4 kontent maydoni: 257mm balandlik
 // Bloklar: Vazirlik(top) → Org chiziqlar → [bo'shliq] →
@@ -328,11 +407,15 @@ function buildCoverPage(meta) {
     spacing: { line: 320 },
   });
 
-  // Chiziq + label (markazda): "_____________ UNIVERSITETI"
-  const ulLine = (label) => cp([
-    r(UL28 + "  "),
-    r(label, true, SZ14),
-  ]);
+  // Chiziq + label (markazda): "_____________ UNIVERSITETI"; foydalanuvchi kiritgan bo'lsa — nomi
+  const ulLine = (label, value) => {
+    const text = String(value || "").trim();
+    if (!text) return cp([r(UL28 + "  "), r(label, true, SZ14)]);
+    const upper = text.toLocaleUpperCase("uz");
+    const hasLabel = new RegExp(label.slice(0, 6), "i").test(upper);
+    return cp([r(hasLabel ? upper : `${upper} ${label}`, true, SZ14)]);
+  };
+  const city = coverCity(meta);
 
   return [
     // ── 1. VAZIRLIK (yuqorida, 14pt qalin) ──────────────────
@@ -341,9 +424,9 @@ function buildCoverPage(meta) {
     cp([r("INNOVATSIYALAR VAZIRLIGI", true)], { after: mm(10) }),
 
     // ── 2. TASHKILOT CHIZIQLARI ──────────────────────────────
-    ulLine("UNIVERSITETI"),
-    ulLine("FAKULTETI"),
-    ulLine("KAFEDRASI"),
+    ulLine("UNIVERSITETI", meta.university),
+    ulLine("FAKULTETI", meta.faculty),
+    ulLine("KAFEDRASI", meta.department),
 
     // ── 3. MUSTAQIL ISH — sahifa markazida (before = katta) ──
     // Yuqori blok ≈ 55mm → MUSTAQIL ISH ≈ 120mm dan boshlaydi (markazga yaqin)
@@ -362,13 +445,65 @@ function buildCoverPage(meta) {
     // ── 6. SHAHAR + YIL — sahifa pastida ─────────────────────
     // before = katta qiymat → yil sahifa pastiga siqadi
     // pageBreakPara yo'q — section2 NEXT_PAGE o'zi sahifa almashtiradi
-    cp([r(UL22 + " — " + year)], { before: mm(70) }),
+    cp([r((city || UL22) + " — " + year)], { before: mm(70) }),
   ];
+}
+
+// ─── MUNDARIJA ──────────────────────────────────────────────
+// Foydalanuvchi so'raganda REJA o'rniga sahifa raqamli mundarija. Raqamlar generatsiyada
+// LibreOffice bilan o'lchanib meta.toc_pages ga yoziladi (statik, Word'da ochilganda ham
+// to'g'ri). O'lchab bo'lmasa — Word mundarija maydoni (ochilganda yangilanadi).
+const TEXT_WIDTH_TWIP = convertMillimetersToTwip(165);
+
+function tocEntries(chapters = []) {
+  const entries = [];
+  let mainNumber = 0;
+  chapters.forEach(chapter => {
+    const isMain = chapter.id !== "intro" && chapter.id !== "conclusion";
+    if (isMain) mainNumber++;
+    const title = stripBob(chapter.title || "");
+    entries.push({ level: 1, text: isMain ? `${mainNumber}. ${title}` : title, search: (isMain ? `${mainNumber}. ${title}` : title).toUpperCase() });
+    (chapter.content || []).forEach(item => {
+      if (item?.type === "heading" && item.level === 2 && String(item.text || "").trim()) {
+        const text = stripBob(item.text);
+        entries.push({ level: 2, text, search: text });
+      }
+    });
+  });
+  entries.push({ level: 1, text: "Foydalanilgan adabiyotlar ro'yxati", search: "Foydalanilgan adabiyotlar ro'yxati" });
+  return entries;
+}
+
+function buildMundarija(chapters, meta) {
+  const nodes = [new Paragraph({
+    children: [new TextRun({ text: "MUNDARIJA", font: FONT, size: FONT_SIZE, bold: true, color: BLACK })],
+    alignment: AlignmentType.CENTER, spacing: { line: 280, after: mm(6) }, indent: undefined,
+  })];
+  const pages = Array.isArray(meta?.toc_pages) ? meta.toc_pages : null;
+  if (!pages) {
+    nodes.push(new TableOfContents("Mundarija", { hyperlink: true, useAppliedParagraphOutlineLevel: true, headingStyleRange: "1-2" }));
+    return nodes;
+  }
+  tocEntries(chapters).forEach((entry, index) => {
+    const page = pages[index];
+    nodes.push(new Paragraph({
+      children: [
+        new TextRun({ text: entry.text, font: FONT, size: FONT_SIZE, bold: entry.level === 1, color: BLACK }),
+        new TextRun({ text: `\t${page != null ? page : ""}`, font: FONT, size: FONT_SIZE, color: BLACK }),
+      ],
+      tabStops: [{ type: TabStopType.RIGHT, position: TEXT_WIDTH_TWIP, leader: LeaderType.DOT }],
+      spacing: { line: 300, after: mm(1) },
+      indent: entry.level === 2 ? { left: mm(8), right: mm(10) } : { right: mm(10) },
+      alignment: AlignmentType.LEFT,
+    }));
+  });
+  return nodes;
 }
 
 // ─── REJA SAHIFASI ──────────────────────────────────────────
 // 2-sahifa: Kirish + faqat raqamlangan asosiy reja bandlari + Xulosa + adabiyotlar.
 function buildReja(chapters, meta) {
+  if (meta?.include_toc) return buildMundarija(chapters, meta);
   const nodes = [];
   // Mavzu takrorlanadi
   nodes.push(new Paragraph({
@@ -434,9 +569,23 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
         nodes.push(item.level === 2 ? heading2(item.text || "") : heading1(item.text || ""));
         break;
       case "formula": {
-        const media = pngCache && pngCache.get("f_" + item.number);
         const caption = numberedMediaCaption(item.number, "formula", item.caption, item.display_text, item.latex);
-        if (media) {
+        // 1) Asosiy yo'l: Word native tenglama (OMML)
+        const omml = activeMath ? safeLatexToOmml(item.latex, { display: true }) : null;
+        const token = omml ? mathTokenRun(omml) : null;
+        const media = pngCache && pngCache.get("f_" + item.number);
+        if (token) {
+          nodes.push(new Paragraph({
+            children: [token],
+            spacing: { ...LINE_SPACING, before: mm(3), after: mm(1) },
+            keepNext: true,
+            keepLines: true,
+            alignment: AlignmentType.CENTER,
+            indent: undefined,
+          }));
+          nodes.push(captionPara(`(${caption})`));
+        } else if (media) {
+          // 2) Zaxira: MathJax PNG (LaTeX OMML ga o'girilmasa)
           nodes.push(...imageBlock(media, `(${caption})`));
         } else {
           nodes.push(new Paragraph({
@@ -445,6 +594,12 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
             alignment: AlignmentType.CENTER, indent: undefined,
           }));
           nodes.push(captionPara(`(${caption})`));
+        }
+        // "bu yerda: U — kuchlanish, V; ..." — belgilarning izohi (GOST 7.32 talabi)
+        const where = String(item.where || item.explanation || "").trim();
+        if (where) {
+          const whereText = /^bu yerda|^где|^where/i.test(where) ? where : `bu yerda ${where}`;
+          nodes.push(para(whereText, { noIndent: true, align: AlignmentType.JUSTIFIED }));
         }
         break;
       }
@@ -456,7 +611,7 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
           ? `${chartCaption} Manba/izoh: ${dataSource}`
           : chartCaption;
         if (media) {
-          nodes.push(...imageBlock(media, captionWithSource));
+          nodes.push(...imageBlock(media, captionWithSource, { maxPageFraction: FIGURE_PAGE_FRACTION }));
         } else {
           // Render qilinmagan bo'lsa — ma'lumotni matn ko'rinishida ko'rsatamiz,
           // hech bo'lmaganda grafik ma'lumoti hujjatda yo'qolmaydi
@@ -475,9 +630,10 @@ function buildChapterContent(chapter, pngCache, isFirst, mainNumber = 0) {
       }
       case "flowchart": {
         const media = pngCache && pngCache.get("d_" + item.number);
-        const caption = numberedMediaCaption(item.number, "rasm", item.caption, item.title);
+        // Rasm ostidagi nom — sxema sarlavhasi ("Izoh: ..." matni bob matnida tushuntiriladi)
+        const caption = numberedMediaCaption(item.number, "rasm", item.title, String(item.caption || "").replace(/^\s*(izoh|примечание|note)\s*:\s*/i, ""));
         if (media) {
-          nodes.push(...imageBlock(media, caption));
+          nodes.push(...imageBlock(media, caption, { maxPageFraction: FIGURE_PAGE_FRACTION }));
         } else {
           console.warn(`[mustaqil] flowchart #${item.number} render qilinmagan — matn ko'rinishida chiqariladi`);
           nodes.push(captionPara(caption));
@@ -510,7 +666,7 @@ function buildReferences(refs = [], topic = "mavzu") {
       indent: undefined,
     }),
   ];
-  sortReferencesAPA(completeBibliography(refs, { topic })).forEach((ref, index) => {
+  sortReferencesAPA(completeBibliography(refs)).forEach((ref, index) => {
     const parts = parseApaPartsForDisplay(ref);
     const run = (text, italics = false) => new TextRun({ text: cleanInlineLatex(text), font: FONT, size: 24, italics, color: BLACK });
     const children = parts
@@ -537,6 +693,11 @@ async function buildDocument(fullSpec, pngCache) {
   // Joriy yilni majburiy o'rnatish (LLM eski yil yozishi mumkin)
   if (meta) meta.year = String(new Date().getFullYear());
 
+  // Sinxron qurilish davomida formulalar shu ro'yxatga yig'iladi (parallel buyurtmalar
+  // bir-biriga aralashmaydi: tugunlar qurilishi orasida await yo'q).
+  const formulas = [];
+  activeMath = formulas;
+  try {
   const coverNodes = buildCoverPage(meta);
   const rejaNodes  = buildReja(chapters, meta);
 
@@ -557,6 +718,8 @@ async function buildDocument(fullSpec, pngCache) {
   });
 
   const doc = new Document({
+    // Mundarija maydoni (statik raqamlar bo'lmasa) Word ochilganda yangilansin
+    features: meta?.include_toc && !Array.isArray(meta?.toc_pages) ? { updateFields: true } : undefined,
     styles: {
       default: {
         document: {
@@ -591,7 +754,12 @@ async function buildDocument(fullSpec, pngCache) {
     ],
   });
 
-  return Packer.toBuffer(doc);
+  activeMath = null;
+  const packed = await Packer.toBuffer(doc);
+  return injectOmml(packed, formulas);
+  } finally {
+    if (activeMath === formulas) activeMath = null;
+  }
 }
 
-module.exports = { buildDocument, buildRejaItems };
+module.exports = { buildDocument, buildRejaItems, splitInlineMath, injectOmml, tocEntries };

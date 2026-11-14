@@ -145,8 +145,9 @@ const pid = {
 test("mavzu semantikasi yetti nomlangan diagramma turiga yo‘naltiriladi", () => {
   assert.deepEqual(GRAPHVIZ_DIAGRAM_TYPES, [
     "functional_block_diagram", "algorithm_flowchart", "pid_control_system", "uml_software_architecture", "process_sequence",
+    "classification_tree", "ishikawa_diagram", "timeline_diagram", "cycle_diagram", "swot_matrix", "automation_scheme",
   ]);
-  assert.deepEqual(MATPLOTLIB_DIAGRAM_TYPES, ["mathematical_graph", "experiment_results"]);
+  assert.deepEqual(MATPLOTLIB_DIAGRAM_TYPES, ["mathematical_graph", "experiment_results", "scatter_trend", "stacked_bar", "horizontal_bar", "dual_axis", "histogram"]);
   assert.equal(classifyGraphvizType({ topic: "Funksional blok-sxema Graphviz" }), "functional_block_diagram");
   assert.equal(classifyGraphvizType({ topic: "Algoritm blok-sxemasi Graphviz" }), "algorithm_flowchart");
   assert.equal(classifyGraphvizType({ topic: "Boshqaruv tizimi PID Graphviz" }), "pid_control_system");
@@ -167,8 +168,8 @@ test("algoritm flowchart standart belgilar va Ha/Yo‘q shoxlarini talab qiladi"
   const dot = buildFlowchartDot(algorithm);
   assert.match(dot, /rankdir=TB/);
   assert.match(dot, /shape=diamond/);
-  assert.match(dot, /shape=ellipse/);
-  assert.match(dot, /Times New Roman/);
+  assert.match(dot, /shape=box, style="rounded,filled"/);
+  assert.match(dot, /DejaVu Sans/);
   assert.throws(() => normalizeFlowchartData({ ...algorithm, edges: algorithm.edges.map(edge => edge.from === "check" && edge.label === "Yo'q" ? { ...edge, label: "Balki" } : edge) }), /Ha va Yo'q/);
   assert.throws(() => normalizeFlowchartData({ ...algorithm, nodes: algorithm.nodes.map(node => node.kind === "start" ? { ...node, kind: "process" } : node) }), /bittadan start va end/);
   assert.throws(() => normalizeFlowchartData({ ...algorithm, edges: [...algorithm.edges, { from: "end", to: "start" }] }), /startga kiruvchi qirra bo'lmasin/);
@@ -192,7 +193,7 @@ test("PID Graphviz modeli besh blok va haqiqiy sensor teskari aloqasini talab qi
   const dot = buildFlowchartDot(pid);
   assert.match(dot, /rankdir=LR/);
   assert.match(dot, /constraint=false/);
-  assert.match(dot, /Times New Roman/);
+  assert.match(dot, /DejaVu Sans/);
   assert.throws(() => normalizeFlowchartData({ ...pid, edges: pid.edges.map(edge => edge.from === "sensor" ? { ...edge, to: "pid" } : edge) }), /PID signal path/);
   assert.throws(() => normalizeFlowchartData({ ...pid, nodes: pid.nodes.map(node => node.kind === "sum" ? { ...node, label: "Xatolik yig'indisi" } : node) }), /doirasiga sig'adigan ixcham/);
   assert.throws(() => normalizeFlowchartData({ ...pid, nodes: pid.nodes.slice(0, 4) }), /aynan 5 ta node/);

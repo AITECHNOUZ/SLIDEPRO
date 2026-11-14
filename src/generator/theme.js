@@ -1,43 +1,119 @@
-// src/theme.js
-// Ranglar palitralari. API javobida "palette" maydoni shu nomlardan birini tanlaydi.
+// src/generator/theme.js
+// Dizayn mavzulari: har biri — shrift juftligi, fon, sarlavha uslubi, kartochka shakli, titul ko'rinishi
+// va o'ziga mos 2–3 ta rang palitrasi. Buyurtmada mavzu va palitra tasodifiy (yoki tanlab) olinadi,
+// shuning uchun har bir taqdimot boshqacha ko'rinadi.
+
+// Palitra kalitlari:
+//   dark/primary/secondary/accent — asosiy ranglar; light — slayd foni; surface — kartochka foni;
+//   card — rangli fon ustidagi oq matn; tint/goodTint/badTint — yengil fonlar; ink/mute — matn; line — chegara chizig'i
+function palette(base) {
+  return {
+    card: "FFFFFF", surface: "FFFFFF", line: "D5DDE3", good: "1FA35A", bad: "C44536",
+    goodTint: "E8F5EC", badTint: "FBECEA", onDark: "C9D6DE",
+    ...base,
+  };
+}
 
 const PALETTES = {
-  ocean: {
-    dark: "0B3A55", primary: "0E5C82", secondary: "2E8AA8", accent: "F0A93B",
-    light: "F5F8FA", card: "FFFFFF", tint: "EAF2F6", goodTint: "E8F5EC", badTint: "FBECEA",
-    ink: "16252D", mute: "5E727C", good: "1FA35A", bad: "C44536", onDark: "B9D4E0",
-  },
-  forest: {
-    dark: "20402A", primary: "2F6B3A", secondary: "5C9648", accent: "E0A444",
-    light: "F5F8F1", card: "FFFFFF", tint: "EBF2E6", goodTint: "E8F4E6", badTint: "FBECEA",
-    ink: "1C2A1E", mute: "5E6E58", good: "3C9E4A", bad: "C0392B", onDark: "C3D8B6",
-  },
-  terracotta: {
-    dark: "5E2C23", primary: "B5513F", secondary: "CC8266", accent: "E2B24C",
-    light: "FAF6F1", card: "FFFFFF", tint: "F5ECE5", goodTint: "EDF3E6", badTint: "F8E6E0",
-    ink: "31231E", mute: "70605A", good: "5C8F4C", bad: "A0342B", onDark: "E8CBBF",
-  },
-  berry: {
-    dark: "3C1B2C", primary: "73304A", secondary: "A05A74", accent: "D9A85C",
-    light: "F8F3F5", card: "FFFFFF", tint: "F2E9EE", goodTint: "EBF3EC", badTint: "F8E6EA",
-    ink: "2A1A22", mute: "6E5560", good: "4F8F5C", bad: "B23A48", onDark: "DCBCC8",
-  },
-  charcoal: {
-    dark: "20262B", primary: "37454E", secondary: "5E7079", accent: "E8A33D",
-    light: "F4F5F6", card: "FFFFFF", tint: "ECEEF0", goodTint: "E8F4EC", badTint: "FBECEA",
-    ink: "1A1F23", mute: "66727A", good: "2E9E5B", bad: "C0392B", onDark: "C4CBD0",
-  },
-  teal: {
-    dark: "0A4240", primary: "0A8A8A", secondary: "16B0A0", accent: "F2A65A",
-    light: "F1F7F6", card: "FFFFFF", tint: "E4F1EF", goodTint: "E6F4EE", badTint: "FBECEA",
-    ink: "12302E", mute: "55706C", good: "1F9E78", bad: "C0392B", onDark: "AEDAD2",
-  },
+  // ── Zamonaviy (avvalgi dizayn) ──
+  ocean: palette({ dark: "0B3A55", primary: "0E5C82", secondary: "2E8AA8", accent: "F0A93B", light: "F5F8FA", tint: "EAF2F6", ink: "16252D", mute: "5E727C", onDark: "B9D4E0" }),
+  teal: palette({ dark: "0A4240", primary: "0A8A8A", secondary: "16B0A0", accent: "F2A65A", light: "F1F7F6", tint: "E4F1EF", ink: "12302E", mute: "55706C", onDark: "AEDAD2" }),
+  berry: palette({ dark: "3C1B2C", primary: "73304A", secondary: "A05A74", accent: "D9A85C", light: "F8F3F5", tint: "F2E9EE", ink: "2A1A22", mute: "6E5560", onDark: "DCBCC8" }),
+  // ── Akademik ──
+  navy: palette({ dark: "14213D", primary: "1D3557", secondary: "457B9D", accent: "C9A227", light: "FFFFFF", tint: "EEF2F7", ink: "1B1F24", mute: "5B6573", line: "C9D2DD", onDark: "C5D1E0" }),
+  burgundy: palette({ dark: "3B0D18", primary: "7A1E2E", secondary: "A4495A", accent: "B8963E", light: "FFFFFF", tint: "F6EDEF", ink: "231A1C", mute: "6B5A5E", line: "DCCBCF", onDark: "E2C6CC" }),
+  forest: palette({ dark: "1E3528", primary: "2F5D44", secondary: "5C8C6A", accent: "C08A2E", light: "FFFFFF", tint: "EDF3EE", ink: "1C2620", mute: "5C6B60", line: "CBD8CE", onDark: "C3D8C8" }),
+  // ── Minimal ──
+  graphite: palette({ dark: "111111", primary: "1F1F1F", secondary: "6B6B6B", accent: "FF5A36", light: "FAFAF8", tint: "F0F0EC", ink: "141414", mute: "6E6E6A", line: "E2E2DD", onDark: "BDBDB8" }),
+  sand: palette({ dark: "2B2621", primary: "3D352D", secondary: "8C7B68", accent: "2F7D6D", light: "FBF8F3", tint: "F2ECE2", ink: "26211C", mute: "776B5E", line: "E6DDD0", onDark: "D3C7B8" }),
+  // ── To'q texnologik ──
+  neon: palette({ dark: "05080F", primary: "0EA5E9", secondary: "22D3EE", accent: "A3E635", light: "0B1220", surface: "131D30", tint: "18283F", goodTint: "11302A", badTint: "3A1C26", ink: "E6EDF7", mute: "93A4BC", line: "24344F", good: "34D399", bad: "F87171", onDark: "93A4BC" }),
+  violet: palette({ dark: "07060F", primary: "7C3AED", secondary: "A78BFA", accent: "F472B6", light: "0F0D1C", surface: "1A1730", tint: "231F3D", goodTint: "13302A", badTint: "3A1A2C", ink: "EDEBFA", mute: "A29CC2", line: "2E2950", good: "34D399", bad: "FB7185", onDark: "A29CC2" }),
+  // ── Yorqin ta'lim ──
+  sunny: palette({ dark: "1F2A5A", primary: "3A57E8", secondary: "00B8A9", accent: "FFB020", light: "FFF9EF", tint: "EAF0FF", ink: "1E2340", mute: "5A6185", line: "E3E6F5", onDark: "C9D2FF" }),
+  coral: palette({ dark: "3A1F4D", primary: "E85D75", secondary: "6C5CE7", accent: "FFC048", light: "FFF7F5", tint: "FDECEF", ink: "2B1E33", mute: "6E5E78", line: "F1DDE2", onDark: "E8CDE9" }),
+  // ── Korporativ ──
+  corporate: palette({ dark: "0F2B46", primary: "0B5CAD", secondary: "3D8BD9", accent: "F2A900", light: "F4F6F9", tint: "E8EFF8", ink: "17212B", mute: "5D6B78", line: "D7DEE6", onDark: "BFD3EA" }),
+  emerald: palette({ dark: "0D2E2A", primary: "0F7B6C", secondary: "38A89D", accent: "F29F05", light: "F3F7F6", tint: "E3F1EE", ink: "142422", mute: "586B68", line: "D2E1DE", onDark: "BFDAD5" }),
+  // ── Muhandislik (chizma) ──
+  blueprint: palette({ dark: "0B2545", primary: "13315C", secondary: "1F5FA6", accent: "C0392B", light: "EEF4FA", surface: "FFFFFF", tint: "DCE8F5", ink: "0B2545", mute: "4A6382", line: "1F5FA6", onDark: "BCD9EE" }),
+  // ── Editorial (jurnal) ──
+  newsprint: palette({ dark: "141414", primary: "1A1A1A", secondary: "B3261E", accent: "B3261E", light: "F6F1E7", surface: "FBF8F1", tint: "ECE4D3", ink: "151515", mute: "5F5A50", line: "1A1A1A", onDark: "D9D2C3" }),
+  inkblue: palette({ dark: "0E1A2B", primary: "0E1A2B", secondary: "2B59C3", accent: "E4572E", light: "F3F1EC", surface: "FAF8F4", tint: "E7E3DA", ink: "101820", mute: "5B6170", line: "0E1A2B", onDark: "CBD3E1" }),
+  // ── Tabiat / ekologiya ──
+  moss: palette({ dark: "1F3B2C", primary: "3A6B4C", secondary: "7FA66B", accent: "E0A458", light: "F4F1E8", tint: "E6EDDD", ink: "1E2B22", mute: "5E6E60", line: "D3DCC8", onDark: "CFE0C4" }),
+  lagoon: palette({ dark: "123F45", primary: "1F7A80", secondary: "6BB8A6", accent: "F2C14E", light: "F0F5F1", tint: "DFEEE9", ink: "15302F", mute: "557270", line: "C9DDD7", onDark: "C3E3DC" }),
+  // ── Aurora (gradientli, shishasimon) ──
+  aurora: palette({ dark: "070A1F", primary: "6D5BFF", secondary: "00C2FF", accent: "FF6FB5", light: "0B1030", surface: "1A2050", tint: "222A63", goodTint: "113A3A", badTint: "40193A", ink: "F1F3FF", mute: "A7AEDB", line: "39418A", good: "3DDC97", bad: "FF6B8B", onDark: "A7AEDB" }),
+  sunset: palette({ dark: "1A0B1F", primary: "FF5E62", secondary: "FF9966", accent: "FFD166", light: "1E0F26", surface: "2E1A3A", tint: "3A2347", goodTint: "1E3A2E", badTint: "4A1C2A", ink: "FFF2EC", mute: "D3B6C4", line: "553366", good: "5BD6A0", bad: "FF6B6B", onDark: "D3B6C4" }),
+  // ── Tibbiyot / ilmiy toza ──
+  clinic: palette({ dark: "063B44", primary: "0B8A9A", secondary: "4FC3CF", accent: "FF7A59", light: "F7FBFC", tint: "E6F5F7", ink: "12313A", mute: "56737B", line: "D2E8EC", onDark: "BFE6EC" }),
+  lab: palette({ dark: "1B2A4A", primary: "3559C7", secondary: "62B6CB", accent: "E9724C", light: "F8FAFD", tint: "E9EFFA", ink: "17213A", mute: "5A6683", line: "D8E0F0", onDark: "C7D3F2" }),
+  // ── Meros / tarix ──
+  parchment: palette({ dark: "3B2412", primary: "6B3F1D", secondary: "9C6B30", accent: "B8892B", light: "F3E9D2", surface: "FBF5E6", tint: "EADCBD", ink: "2E1F12", mute: "6E5A44", line: "9C6B30", onDark: "E6D3AE" }),
+  lapis: palette({ dark: "10213F", primary: "1D3A6E", secondary: "2F6690", accent: "C9A227", light: "F1ECE0", surface: "FAF7EF", tint: "E2DCCB", ink: "16213A", mute: "5F6578", line: "C9A227", onDark: "D8D0B8" }),
+  steel: palette({ dark: "1C2833", primary: "2C3E50", secondary: "5D6D7E", accent: "D35400", light: "F2F4F5", surface: "FFFFFF", tint: "E5E8EB", ink: "1C2833", mute: "566573", line: "2C3E50", onDark: "C9D1D8" }),
 };
 
-const FONTS = { head: "Cambria", body: "Calibri" };
+// Mavzular (uslub). header: number|rule|band|sidebar|bigtitle|frame
+// card: shadow|border|flat|topline|stripe|outline;  bg: plain|dots|grid-dark|blobs|blueprint
+// cover: circles|academic|minimal|tech|bright|split|blueprint
+const THEMES = {
+  modern: { name: "Zamonaviy", fonts: { head: "Cambria", body: "Calibri" }, palettes: ["ocean", "teal", "berry"], header: "number", card: "shadow", bg: "plain", cover: "circles", radius: 0.13 },
+  academic: { name: "Akademik klassik", fonts: { head: "Georgia", body: "Calibri" }, palettes: ["navy", "burgundy", "forest"], header: "rule", card: "border", bg: "plain", cover: "academic", radius: 0.04 },
+  minimal: { name: "Zamonaviy minimal", fonts: { head: "Calibri Light", body: "Calibri" }, palettes: ["graphite", "sand"], header: "bigtitle", card: "flat", bg: "plain", cover: "minimal", radius: 0 },
+  tech: { name: "To'q texnologik", fonts: { head: "Segoe UI Semibold", body: "Segoe UI" }, palettes: ["neon", "violet"], header: "number", card: "topline", bg: "grid-dark", cover: "tech", radius: 0.06, dark: true },
+  bright: { name: "Yorqin ta'lim", fonts: { head: "Trebuchet MS", body: "Trebuchet MS" }, palettes: ["sunny", "coral"], header: "band", card: "stripe", bg: "blobs", cover: "bright", radius: 0.22 },
+  corporate: { name: "Korporativ", fonts: { head: "Arial", body: "Arial" }, palettes: ["corporate", "emerald"], header: "sidebar", card: "shadow", bg: "plain", cover: "split", radius: 0.06 },
+  editorial: { name: "Jurnal (editorial)", fonts: { head: "Georgia", body: "Calibri" }, palettes: ["newsprint", "inkblue"], header: "editorial", card: "ink", bg: "paper", cover: "editorial", radius: 0 },
+  nature: { name: "Tabiat va ekologiya", fonts: { head: "Candara", body: "Candara" }, palettes: ["moss", "lagoon"], header: "leaf", card: "soft", bg: "leaves", cover: "nature", radius: 0.3 },
+  aurora: { name: "Aurora (gradient)", fonts: { head: "Segoe UI Semibold", body: "Segoe UI" }, palettes: ["aurora", "sunset"], header: "glass", card: "glass", bg: "aurora", cover: "aurora", radius: 0.16, dark: true },
+  medical: { name: "Tibbiyot va ilm", fonts: { head: "Calibri", body: "Calibri" }, palettes: ["clinic", "lab"], header: "pill", card: "border", bg: "clean", cover: "medical", radius: 0.2 },
+  heritage: { name: "Tarix va meros", fonts: { head: "Palatino Linotype", body: "Book Antiqua" }, palettes: ["parchment", "lapis"], header: "ornament", card: "double", bg: "parchment", cover: "heritage", radius: 0 },
+  engineering: { name: "Muhandislik chizma", fonts: { head: "Century Gothic", body: "Calibri" }, palettes: ["blueprint", "steel"], header: "frame", card: "outline", bg: "blueprint", cover: "blueprint", radius: 0 },
+};
+
+const FONTS = THEMES.modern.fonts; // eski importlar uchun
 
 function getPalette(name) {
   return PALETTES[name] || PALETTES.ocean;
 }
 
-module.exports = { PALETTES, FONTS, getPalette };
+function getTheme(name) {
+  return THEMES[name] || THEMES.modern;
+}
+
+// Mavzu (dizayn) va taqdimot mavzusi mosligi: kalit so'zlar bo'yicha (o'zbek/rus/ingliz)
+const TOPIC_RULES = {
+  engineering: /avtomat|texnik|muhandis|elektr|mexani|qurilish|energeti|pech|dvigatel|sxema|stanok|neft|gaz\b|gazni|metallurg|transport|asbob|o'lchash|o‘lchash|автомат|техни|инженер|электр|механ|engineer|mechanic|electric/i,
+  tech: /dastur|kompyuter|sun'iy intellekt|sun‘iy intellekt|\bai\b|tarmoq|kiber|ma'lumotlar baza|blokcheyn|robot|raqamli|axborot|web|mobil ilova|python|algoritm|программ|компьютер|искусствен|кибер|информац|software|computer|cyber|data|digital/i,
+  aurora: /startap|innovatsi|marketing|media|kelajak|kosmos|koinot|brend|reklama|kreativ|стартап|инновац|маркетинг|космос|startup|innovation|future|space/i,
+  bright: /ta'lim|ta‘lim|maktab|bolalar|o'quvchi|o‘quvchi|o'yin|o‘yin|sport|jismoniy|pedagog|tarbiya|школ|дет|обучени|спорт|school|kids|education|sport/i,
+  corporate: /biznes|bank|moliya|boshqaruv|korxona|logistika|savdo|menejment|iqtisod|investitsi|audit|soliq|buxgalter|бизнес|банк|финанс|менеджмент|экономи|business|finance|management|econom/i,
+  nature: /ekolog|tabiat|qishloq xo'jalik|qishloq xo‘jalik|o'simlik|o‘simlik|suv resurs|iqlim|qayta tiklanuvchi|quyosh|shamol energ|issiqxona|tuproq|o'rmon|o‘rmon|hayvon|bioxilma|эколог|природ|климат|растен|сельск|solar|ecolog|climate|nature|green/i,
+  medical: /tibbiy|tibbiyot|kasallik|sog'liq|sog‘liq|farmats|anatomi|biolog|genetik|gigiyena|hujayra|virus|immun|dori|stomatolog|медицин|болезн|здоров|биолог|генет|medic|health|disease|biolog|genetic|cell/i,
+  heritage: /tarix|madaniyat|adabiyot|meros|arxeolog|qadimgi|sulola|temur|amir|xonlik|shoir|yozuvchi|doston|me'morchilik|me‘morchilik|din\b|islom|falsafa|истори|культур|литератур|наслед|history|culture|literature|heritage|ancient/i,
+  editorial: /jurnalist|siyosat|sotsiolog|psixolog|ijtimoiy|huquq|demokrat|jamiyat|journal|politic|sociolog|psycholog|журналист|политик|социолог|психолог|прав/i,
+  academic: /fizika|kimyo|matematika|nazariya|tadqiqot|ilmiy|qonun|huquq|pedagogika|tilshunos|физик|хими|математ|научн|physics|chemistry|mathemat|research|theory/i,
+  minimal: /dizayn|arxitektura|san'at|san‘at|fotografiya|moda|interyer|дизайн|архитектур|искусств|design|architecture|art\b/i,
+};
+const UNIVERSAL_THEMES = ["modern", "academic", "minimal", "corporate", "aurora", "editorial"];
+
+function suitableThemes(topic = "") {
+  const text = String(topic || "").replace(/[`’ʻʼ‘´]/g, "'");
+  return Object.entries(TOPIC_RULES).filter(([, re]) => re.test(text)).map(([key]) => key);
+}
+
+// Mavzu va palitra tanlash: aniq berilsa — o'sha; aks holda taqdimot mavzusiga mos mavzular orasidan
+// tasodifiy (mos topilmasa — universal mavzulardan). Shu bilan har buyurtma boshqacha, lekin mavzuga mos.
+function pickDesign({ theme, palette: paletteName, topic = "", random = Math.random } = {}) {
+  const suitable = suitableThemes(topic);
+  // 80% — mavzuga mos dizayn; 20% — universal dizayn (bir xil mavzudagi taqdimotlar ham takrorlanmasin)
+  const pool = suitable.length && random() < 0.8 ? suitable : UNIVERSAL_THEMES;
+  const themeKey = THEMES[theme] ? theme : pool[Math.floor(random() * pool.length) % pool.length];
+  const th = THEMES[themeKey];
+  const paletteKey = th.palettes.includes(paletteName) ? paletteName : th.palettes[Math.floor(random() * th.palettes.length)];
+  return { themeKey, paletteKey, theme: th, palette: PALETTES[paletteKey] };
+}
+
+module.exports = { PALETTES, THEMES, FONTS, getPalette, getTheme, pickDesign, suitableThemes, UNIVERSAL_THEMES };

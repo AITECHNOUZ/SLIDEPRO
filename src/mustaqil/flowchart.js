@@ -1,3 +1,4 @@
+const path = require("node:path");
 const { spawn } = require("node:child_process");
 const sharp = require("sharp");
 const { normalizeFlowchartData } = require("./flowchart-data");
@@ -9,6 +10,8 @@ const MAX_PNG_BYTES = 8 * 1024 * 1024;
 const RENDER_TIMEOUT_MS = 15_000;
 const FLOWCHART_HEIGHT_SCALE = 1.5;
 const FLOWCHART_LABEL_LINE_LENGTH = 20;
+// GOST chizma qoidasi: GOST shriftiga yaqin DejaVu Sans (Docker'da fonts-dejavu o'rnatilgan).
+const FLOWCHART_FONT = process.env.SLIDEPRO_FIGURE_FONT || "DejaVu Sans";
 // DOCX ImageRun uses 96 px per inch; canvas ratio matches these fixed algorithm-diagram dimensions.
 const ALGORITHM_WORD_WIDTH_IN = 1.92;
 const ALGORITHM_WORD_HEIGHT_IN = 3.45;
@@ -70,13 +73,14 @@ function buildFlowchartDot(input, { wrapLabels = true, ranksepMultiplier } = {})
   });
   const lines = [
     "digraph Flowchart {",
-    `  graph [${[...graphAttrs, 'bgcolor="white"', 'pad="0.22"', 'fontname="Times New Roman"'].join(", ")}];`,
-    '  node [color="#457B9D", penwidth=1.4, fontname="Times New Roman", fontsize=12, fontcolor="#18324B", margin="0.16,0.10"];',
-    `  edge [${[...template.edgeAttrs, 'fontname="Times New Roman"', 'fontsize=10', 'fontcolor="#40566B"'].join(", ")}];`,
+    `  graph [${[...graphAttrs, 'bgcolor="white"', 'pad="0.22"', `fontname="${FLOWCHART_FONT}"`].join(", ")}];`,
+    // Gorizontal (LR) sxemalar Word'da 6,2 dyuymga siqiladi — yozuv kichrayib ketmasligi uchun shrift kattaroq.
+    `  node [color="#000000", penwidth=1.8, fontname="${FLOWCHART_FONT}", fontsize=${horizontal ? 16 : 12}, fontcolor="#000000", margin="0.16,0.10"];`,
+    `  edge [${[...template.edgeAttrs, `fontname="${FLOWCHART_FONT}"`, `fontsize=${horizontal ? 14 : 10}`, 'fontcolor="#000000"'].join(", ")}];`,
   ];
 
   const nodeLine = (node, index) => {
-    const displayLabel = wrapLabels ? wrapFlowchartLabel(node.label) : node.label;
+    const displayLabel = wrapLabels ? wrapFlowchartLabel(node.label, horizontal ? 12 : FLOWCHART_LABEL_LINE_LENGTH) : node.label;
     const label = escapeDotText(node.kind === "actor" ? `«actor»\n${displayLabel}` : displayLabel);
     const options = template.nodeAttrs[node.kind];
     return `    ${node.id} [label="${label}", ${options}];`;
@@ -108,7 +112,7 @@ function buildFlowchartDot(input, { wrapLabels = true, ranksepMultiplier } = {})
     const toIndex = flowchart.nodes.findIndex(node => node.id === edge.to);
     if (template.id === "pid_control_system" && edge.from === flowchart.nodes.find(node => node.kind === "sensor")?.id) {
       // In a left-to-right feedback cycle, Graphviz places the rendered arrowhead at the sensor end unless reversed explicitly.
-      edgeAttributes.push('constraint=false', 'minlen=2', 'color="#A15C45"', 'tailport=s', 'headport=s', 'dir=back');
+      edgeAttributes.push('constraint=false', 'minlen=2', 'color="#1f5fa6"', 'tailport=s', 'headport=s', 'dir=back');
     } else if (template.id === "algorithm_flowchart" && toIndex <= fromIndex) {
       edgeAttributes.push('constraint=false', 'minlen=2');
     }
@@ -139,7 +143,7 @@ function runGraphviz(dot, layoutEngine = "dot") {
     let stdoutBytes = 0;
     let stderr = "";
     const stdout = [];
-    const child = spawn("dot", [`-K${layoutEngine}`, "-Tpng", "-Gdpi=160"], {
+    const child = spawn("dot", [`-K${layoutEngine}`, "-Tpng", "-Gdpi=300"], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -184,7 +188,52 @@ function runGraphviz(dot, layoutEngine = "dot") {
   });
 }
 
+// GOST chizma qoidasi bo'yicha matplotlib renderer (ortogonal chiziqlar, T-tutashuv nuqtalari,
+// GOST 19.701 / GOST 2.721 belgilari, 1:1 masshtab). Ishlamasa — Graphviz zaxira.
+const GOST_SCHEMATIC_SCRIPT = path.join(__dirname, "gost-schematic.py");
+const SCHEMATIC_DPI = 300;
+let schematicFallbackReported = false;
+// Har safar bir xil ko'rinmasligi uchun joylashuv varianti tasodifiy tanlanadi
+const LAYOUT_VARIANTS = {
+  classification_tree: ["vertical", "horizontal"],
+  timeline_diagram: ["horizontal", "vertical"],
+  cycle_diagram: ["ring", "loop"],
+};
+
+async function renderGostSchematic(input) {
+  const { runMatplotlib } = require("./matplotlib");
+  const template = getFlowchartTemplate(input?.template_id || input?.diagram_type);
+  const normalized = normalizeFlowchartData(input, { diagramType: template.id });
+  const variants = LAYOUT_VARIANTS[template.id] || [""];
+  const variant = variants.includes(input?.variant) ? input.variant : variants[Math.floor(Math.random() * variants.length)];
+  const buf = await runMatplotlib({ ...normalized, diagram_type: template.id, language: input?.language || "", variant }, GOST_SCHEMATIC_SCRIPT);
+  const metadata = await sharp(buf).metadata();
+  if (metadata.format !== "png" || !metadata.width || !metadata.height) {
+    throw new Error("flowchart: GOST sxema yaroqli PNG qaytarmadi");
+  }
+  // 1:1 masshtab: 300 dpi PNG → Word'da haqiqiy dyuym o'lchami (96 px/dyuym)
+  const width = metadata.width / SCHEMATIC_DPI * WORD_PIXELS_PER_INCH;
+  const height = metadata.height / SCHEMATIC_DPI * WORD_PIXELS_PER_INCH;
+  const fit = Math.min(1, 595 / width, 760 / height);
+  return { buf, width: Number((width * fit).toFixed(6)), height: Number((height * fit).toFixed(6)) };
+}
+
 async function renderFlowchart(input) {
+  if (process.env.SLIDEPRO_FLOWCHART_ENGINE !== "graphviz") {
+    try {
+      return await renderGostSchematic(input);
+    } catch (error) {
+      if (/flowchart: /.test(error.message) && !/GOST sxema|Matplotlib/i.test(error.message)) throw error;
+      if (!schematicFallbackReported) {
+        schematicFallbackReported = true;
+        console.warn(`[mustaqil] GOST sxema renderi ishlamadi, Graphviz zaxira ishlatiladi: ${error.message}`);
+      }
+    }
+  }
+  return renderGraphvizFlowchart(input);
+}
+
+async function renderGraphvizFlowchart(input) {
   const dot = buildFlowchartDot(input);
   const template = getFlowchartTemplate(input?.template_id || input?.diagram_type);
   const rawPng = await runGraphviz(dot, template.layoutEngine);
@@ -193,14 +242,15 @@ async function renderFlowchart(input) {
     .flatten({ background: { r: 255, g: 255, b: 255 } })
     .resize(isAlgorithm
       ? { width: ALGORITHM_CANVAS_WIDTH, height: ALGORITHM_CANVAS_HEIGHT, fit: "contain", withoutEnlargement: false, background: { r: 255, g: 255, b: 255 } }
-      : { width: 1400, height: 1800, fit: "inside", withoutEnlargement: true })
+      : { width: 2400, height: 3000, fit: "inside", withoutEnlargement: true })
     .png()
     .toBuffer();
   const metadata = await sharp(normalizedPng).metadata();
   if (metadata.format !== "png" || !metadata.width || !metadata.height) {
     throw new Error("flowchart: yaroqli PNG rasm olinmadi");
   }
-  const scale = isAlgorithm ? 1 : Math.min(520 / metadata.width, 620 / metadata.height, 1);
+  // Word'da ~6,2 dyuym (595 px) kenglikdan oshmaydi; 300 dpi manba aniq ko'rinadi.
+  const scale = isAlgorithm ? 1 : Math.min(595 / metadata.width, 760 / metadata.height, 1);
   return {
     buf: normalizedPng,
     width: isAlgorithm ? ALGORITHM_WORD_WIDTH_IN * WORD_PIXELS_PER_INCH : Math.max(1, Number((metadata.width * scale).toFixed(6))),
@@ -208,4 +258,4 @@ async function renderFlowchart(input) {
   };
 }
 
-module.exports = { buildFlowchartDot, renderFlowchart };
+module.exports = { buildFlowchartDot, renderFlowchart, renderGostSchematic, renderGraphvizFlowchart };

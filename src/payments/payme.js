@@ -110,7 +110,7 @@ function buildPaymentUrl(orderId, amount) {
 
 // Express handler
 function webhook(req, res) {
-  if (!checkAuth(req)) {
+  if (!config.payme.key || !checkAuth(req)) {
     return res.json(rpcError(req.body && req.body.id, PAYME_ERR.UNAUTHORIZED));
   }
   const { method, params, id } = req.body || {};

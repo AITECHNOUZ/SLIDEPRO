@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+*.sqlite
+*.sqlite-journal
+output/
+tmp/
+icons/
+*.log
+.DS_Store
+__pycache__/

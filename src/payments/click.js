@@ -65,10 +65,11 @@ async function handleComplete(body) {
   if (mySign !== sign_string) return { error: ERR.SIGN_CHECK_FAILED, error_note: "Sign check failed" };
   if (!order) return { error: ERR.USER_NOT_FOUND, error_note: "Order not found" };
   if (Number(error) < 0) {
-    updateOrder(orderId, { status: "failed" });
+    if (!["paid", "generating", "done"].includes(order.status)) updateOrder(orderId, { status: "failed" });
     return { error: ERR.TRANSACTION_CANCELLED, error_note: "Cancelled" };
   }
-  if (order.status === "done" || order.status === "paid") return { error: ERR.ALREADY_PAID, error_note: "Already paid" };
+  if (["done", "paid", "generating"].includes(order.status)) return { error: ERR.ALREADY_PAID, error_note: "Already paid" };
+  if (Math.round(Number(amount)) !== Math.round(order.amount)) return { error: ERR.INCORRECT_AMOUNT, error_note: "Incorrect amount" };
 
   updateOrder(orderId, { status: "paid" });
   // generatsiyani fon rejimida boshlash
@@ -83,6 +84,10 @@ async function handleComplete(body) {
 
 // Express handler
 async function webhook(req, res) {
+  // Maxfiy kalit sozlanmagan bo'lsa imzoni istalgan odam yasay oladi — so'rovni rad etamiz
+  if (!config.click.secretKey || !config.click.serviceId) {
+    return res.json({ error: ERR.ERROR_IN_REQUEST, error_note: "Click is not configured" });
+  }
   try {
     const action = String(req.body.action);
     if (action === "0") return res.json(handlePrepare(req.body));

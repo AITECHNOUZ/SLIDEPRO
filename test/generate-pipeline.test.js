@@ -15,14 +15,14 @@ const {
 } = require("../src/mustaqil/generate");
 
 const references = [
-  "Karimov, A. (2020). O‘zbekiston ta’lim tizimi va rivojlanish asoslari. Fan va texnologiya. 248 pp. https://doi.org/10.0000/refs.uz.2020.karimov",
-  "Ivanov, I. I. (2019). Основы автоматического управления. Наука. 320 pp. https://doi.org/10.0000/refs.ru.2019.ivanov",
-  "Smith, J. (2021). The fundamentals of control systems. Academic Press. 286 pp. https://doi.org/10.0000/refs.en.2021.smith",
-  "Rahimov, B. (2018). O‘zbek adabiyoti tarixi va nazariyasi. Sharq. 275 pp. https://doi.org/10.0000/refs.uz.2018.rahimov",
-  "Petrov, P. P. (2022). Исследование систем управления. Издательство МГУ. 310 pp. https://doi.org/10.0000/refs.ru.2022.petrov",
-  "Brown, R. (2020). Research methods in engineering. Springer. 296 pp. https://doi.org/10.0000/refs.en.2020.brown",
-  "Usmonov, D. (2023). O‘quv jarayonini boshqarish va tahlil. Universitet nashriyoti. 264 pp. https://doi.org/10.0000/refs.uz.2023.usmonov",
-  "Sidorov, S. S. (2021). Современные методы анализа данных. Научное издательство. 302 pp. https://doi.org/10.0000/refs.ru.2021.sidorov",
+  "Karimov, A. (2020). O‘zbekiston ta’lim tizimi va rivojlanish asoslari. Fan va texnologiya. 248 pp.",
+  "Ivanov, I. I. (2019). Основы автоматического управления. Наука. 320 pp.",
+  "Smith, J. (2021). The fundamentals of control systems. Academic Press. 286 pp.",
+  "Rahimov, B. (2018). O‘zbek adabiyoti tarixi va nazariyasi. Sharq. 275 pp.",
+  "Petrov, P. P. (2022). Исследование систем управления. Издательство МГУ. 310 pp.",
+  "Brown, R. (2020). Research methods in engineering. Springer. 296 pp.",
+  "Usmonov, D. (2023). O‘quv jarayonini boshqarish va tahlil. Universitet nashriyoti. 264 pp.",
+  "Sidorov, S. S. (2021). Современные методы анализа данных. Научное издательство. 302 pp.",
 ];
 const incompleteReferences = [
   "Taylor, A. (2020). The control systems study 1. Test Press.",
@@ -152,11 +152,27 @@ function mediaResponse(userPrompt, attempts) {
         edges: [["control", "service", "calls"], ["service", "database", "reads"]],
       },
     };
+    const templateExample = require("../src/mustaqil/flowchart-templates").getFlowchartTemplate(diagramType).example;
+    if (!examples[diagramType] && templateExample) {
+      return {
+        slot_id: slotId, type: "flowchart", diagram_type: diagramType,
+        title: "Avtomatik boshqaruv tizimining tarkibi", caption: "Izoh: tizim elementlari va ularning o'zaro aloqasi ko'rsatilgan.",
+        nodes: templateExample.nodes.map((node, index) => ({ ...node, label: `Element ${index + 1}` })),
+        edges: templateExample.edges,
+      };
+    }
     const selected = examples[diagramType] || examples.functional_block_diagram;
     return {
       slot_id: slotId, type: "flowchart", diagram_type: diagramType,
       title: "Avtomatik boshqaruv tizimining tarkibi", nodes: selected.nodes,
       edges: selected.edges.map(([from, to, label = ""]) => ({ from, to, label })),
+    };
+  }
+  if (slotId.includes(":table:")) {
+    return {
+      slot_id: slotId, type: "table", title: "Rostlash usullarini taqqoslash", caption: "Rostlash usullarini taqqoslash",
+      headers: ["Usul", "Aniqlik", "Qo'llanishi"],
+      rows: [["P", "Past", "Oddiy obyektlar"], ["PI", "O'rta", "Sarf va bosim"], ["PID", "Yuqori", "Harorat"]],
     };
   }
   throw new Error(`Kutilmagan slot: ${slotId}`);
@@ -196,7 +212,8 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
 
   try {
     const result = await generateMustaqilIsh({
-      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile,
+      random: () => 0,
+      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile, formulaCount: 2,
       llm: { provider: "openai", openaiKey: "mock-key", openaiModel: "mock-model" },
       onProgress: update => progressUpdates.push(update),
     });
@@ -214,20 +231,23 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
     assert.ok(fs.statSync(outFile).size > 5_000);
     const archive = await JSZip.loadAsync(fs.readFileSync(outFile));
     const mediaFiles = Object.keys(archive.files).filter(name => name.startsWith("word/media/") && !archive.files[name].dir);
-    assert.equal(mediaFiles.length, 6, "ikkita formula, ikkita chart va ikkita Graphviz PNG Word fayliga qo'shiladi");
+    assert.equal(mediaFiles.length, 4, "formulalar OMML (rasm emas); ikkita chart va ikkita Graphviz PNG Word fayliga qo'shiladi");
     const documentXml = await archive.file("word/document.xml").async("string");
-    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 6);
+    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 4);
+    assert.ok((documentXml.match(/<m:oMath>/g) || []).length >= 2, "ikkala formula Word native tenglama (OMML) bo'lib yoziladi");
+    assert.doesNotMatch(documentXml, /\u27E6OMML/, "OMML tokenlari to'liq almashtiriladi");
     assert.doesNotMatch(documentXml, /sintetik|synthetic|real o(?:'|&apos;)lchov emas|haqiqiy tajriba o(?:'|&apos;)lchovi emas/i,
       "yakuniy hujjatdagi media nomlari va captionlarida sun'iy ma'lumot disclosure'i bo'lmasin");
     assert.match(documentXml, /1-formula\. Tizim modeli/);
     assert.match(documentXml, /2-formula\. O(?:&apos;|')tkinchi javob/);
-    assert.match(documentXml, /\d+-rasm\. Izoh:/, "Graphviz sarlavhasi rasm ichidan olib tashlansa ham DOCX captioni saqlansin");
+    assert.match(documentXml, /\d+-rasm\. (?!Izoh)[A-Za-z]/, "rasm ostida sxema nomi (sarlavha) saqlansin");
     const bibliographyStart = documentXml.lastIndexOf("Foydalanilgan adabiyotlar");
     assert.notEqual(bibliographyStart, -1, "bibliografiya bo'limi DOCX ichida mavjud");
     const bibliographyXml = documentXml.slice(bibliographyStart);
     const bibliographyNumbers = [...bibliographyXml.matchAll(/<w:t(?:\s[^>]*)?>(\d+)\.\s/g)].map(match => Number(match[1]));
-    assert.deepEqual(bibliographyNumbers, Array.from({ length: 12 }, (_, index) => index + 1), "DOCX adabiyotlar sahifasida aynan 12 ta manba 1–12 tartibda raqamlanadi");
-    assert.equal((bibliographyXml.match(/https:\/\/doi\.org\/10\./g) || []).length, 12, "har bir adabiyot yozuvida DOI havolasi bo‘ladi");
+    assert.deepEqual(bibliographyNumbers, Array.from({ length: references.length }, (_, index) => index + 1),
+      "DOCX'da faqat haqiqiy (to'liq) manbalar 1..N tartibda chiqadi — 12 taga soxta yozuv bilan to'ldirilmaydi");
+    assert.doesNotMatch(bibliographyXml, /10\.0000\/|slidepro\.(?:uz|ru|en)/, "yakuniy ro'yxatda namunaviy/soxta DOI bo'lmaydi");
     assert.match(bibliographyXml, /\d+ pp\./, "kitob yozuvlarida umumiy sahifa soni ko‘rsatiladi");
     assert.doesNotMatch(bibliographyXml, /AI-generated|verify before citation|synthetic|fallback/i, "yakuniy bibliografiyada sintetik yoki fallback belgisi bo'lmaydi");
     assert.ok(bibliographyXml.indexOf("Brown, R.") < bibliographyXml.indexOf("Ivanov, I. I."), "APA manbalari muallif bo'yicha saralanadi");
@@ -241,20 +261,22 @@ test("16 betlik ish DOCX yaratadi va PDF/layout tekshiruvisiz media slotlarini b
     const bibliographyRetries = requests.filter(prompt => prompt.includes("BIBLIOGRAFIYANI TUZATISH"));
     assert.equal(bibliographyRetries.length, 1, "til qamrovi/APA muammosi uchun faqat bitta alohida bibliografiya retry bo'ladi");
     assert.match(bibliographyRetries[0], /references maydonini qaytar/);
-    assert.match(bibliographyRetries[0], /AYNAN 12 ta yozuv/);
+    assert.match(bibliographyRetries[0], /FAQAT HAQIQIY MANBALAR/);
     assert.match(bibliographyRetries[0], /Hech qanday AI, sintetik, tekshirish yoki boshqa belgi\/yorliq\/izoh qo'shma/);
     assert.doesNotMatch(bibliographyRetries[0], /AI-generated|verify before citation|AI-illustrativ/i);
     assert.doesNotMatch(bibliographyRetries[0], /Nazariy asoslar|Amaliy tahlil/, "retry boblar mazmunini qayta yaratishni so'ramaydi");
     assert.equal(requests.filter(prompt => prompt.includes("MEDIA AJRATISH QOIDASI")).length, 6, "6 ta bobning prose so'rovlari media payloadini generatsiya qilmaydi");
     const slotRequests = requests.filter(prompt => prompt.includes("Slot ID:"));
-    assert.equal(slotRequests.length, 7, "6 ta media sloti va faqat bitta yaroqsiz formula slotiga qo'shimcha urinish bo'ladi");
+    const uniqueSlots = new Set(slotRequests.map(prompt => prompt.match(/Slot ID: (\S+?)\./)[1]));
+    assert.equal(slotRequests.length, uniqueSlots.size + 1, "har media slotiga bitta so'rov va faqat bitta yaroqsiz formula slotiga qo'shimcha urinish");
+    assert.ok([...uniqueSlots].some(id => /:table:/.test(id)), "har ishda kamida bitta taqqoslash jadvali rejalashtiriladi");
     assert.ok(slotRequests.every(prompt => /status yorlig'i qo'shma|status yorliqlarini ishlatma/i.test(prompt)), "media promptlari captionlarda status/disclosure yorlig'ini taqiqlasin");
     const flowchartRequests = slotRequests.filter(prompt => prompt.includes('"type":"flowchart"'));
     assert.equal(flowchartRequests.length, 2, "har bir rejalashtirilgan Graphviz sloti alohida prompt oladi");
     const selectedTypes = flowchartRequests.map(prompt => prompt.match(/Tanlangan va o‘zgarmas diagram_type: ([A-Za-z0-9_]+)/)?.[1]);
-    assert.ok(selectedTypes.every(type => ["functional_block_diagram", "algorithm_flowchart", "pid_control_system", "uml_software_architecture", "process_sequence"].includes(type)), "har bir Graphviz promptida mavzuga mos semantic diagram_type ko'rsatiladi");
+    assert.ok(selectedTypes.every(type => require("../src/mustaqil/flowchart-templates").FLOWCHART_TEMPLATE_BY_ID.has(type)), "har bir Graphviz promptida mavzuga mos semantic diagram_type ko'rsatiladi");
     assert.ok(flowchartRequests.every(prompt => /Avtomatik boshqaruv tizimlari/.test(prompt) && /bob|Reja:/i.test(prompt)), "Graphviz so'rovlari hujjat mavzusi va bob rejasi bilan boyitiladi");
-    assert.equal(new Set(slotRequests.map(prompt => prompt.match(/Slot ID: ([^\s.]+)/)?.[1])).size, 6);
+    assert.equal(new Set(slotRequests.map(prompt => prompt.match(/Slot ID: ([^\s.]+)/)?.[1])).size, 7, "6 ta media + 1 taqqoslash jadvali");
     assert.equal(mediaAttempts.get("ch1:formula:1"), 2, "yaroqsiz LaTeX rejaga mos kelmagani uchun aynan shu slot qayta olinadi");
     assert.equal(mediaAttempts.get("ch2:formula:1"), 1, "ikkinchi yaroqli formula sloti qayta so'ralmaydi");
     assert.ok([...mediaAttempts].filter(([slotId]) => !slotId.includes(":formula:")).every(([, count]) => count === 1));
@@ -290,16 +312,18 @@ test("Graphviz renderlari yiqilsa ham pipeline qolgan media bilan DOCX tayyorlay
 
   try {
     const result = await generateMustaqilIsh({
-      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile,
+      random: () => 0,
+      topic: "Avtomatik boshqaruv tizimlari", pages: 16, language: "o'zbek", outFile, formulaCount: 2,
       llm: { provider: "openai", openaiKey: "mock-key", openaiModel: "mock-model" },
     });
     assert.equal(result.title, "Pipeline sinovi");
     assert.equal(fs.existsSync(outFile), true, "bitta Graphviz muammosi hujjatni bekor qilmasin");
     const archive = await JSZip.loadAsync(fs.readFileSync(outFile));
     const mediaFiles = Object.keys(archive.files).filter(name => name.startsWith("word/media/") && !archive.files[name].dir);
-    assert.equal(mediaFiles.length, 4, "valid formula/chart rasmlari qoladi, render xatosi bo‘lgan flowchart rasmlari kiritilmaydi");
+    assert.equal(mediaFiles.length, 2, "valid chart rasmlari qoladi (formulalar OMML), render xatosi bo‘lgan flowchart rasmlari kiritilmaydi");
     const documentXml = await archive.file("word/document.xml").async("string");
-    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 4);
+    assert.equal((documentXml.match(/<w:drawing>/g) || []).length, 2);
+    assert.ok((documentXml.match(/<m:oMath>/g) || []).length >= 2, "formulalar Word native tenglama bo'lib qoladi");
     assert.match(documentXml, /\[Oqim sxemasi:/, "flowchart rasm bo‘lmasa ham uning xavfsiz matnli fallbacki qoladi");
   } finally {
     global.fetch = originalFetch;
